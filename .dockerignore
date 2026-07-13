@@ -1,0 +1,15 @@
+.git
+MEMORY.md
+*.log
+__pycache__/
+*.pyc
+.venv/
+venv/
+survey.db
+survey.db-journal
+survey.db-wal
+survey.db-shm
+figures/
+review_pack/
+thumbnails/
+*.csv

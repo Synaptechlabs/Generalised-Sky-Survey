@@ -1,7 +1,7 @@
 <!--
 File:        quickstart.md
-Version:     0.1
-Date:        2026-07-11
+Version:     0.2
+Date:        2026-07-13
 Author:      Scott Douglass
 Description: Command-first quickstart reference for running the pipeline
              end-to-end.
@@ -10,18 +10,22 @@ Description: Command-first quickstart reference for running the pipeline
 # Quickstart
 
 Command-first reference. For the why behind these steps, see
-[README.md](README.md); for architecture/gotchas, see [MEMORY.md](MEMORY.md).
+[README.md](README.md).
 
 ## First-time setup
 
 ```bash
-pip install astroquery astropy pandas scikit-learn matplotlib numpy requests
+pip install -r requirements.txt
 python startup/init_db.py
 python startup/populate.py --db survey.db
 ```
 
 Both `startup/` scripts are safe to re-run — they're no-ops once `survey.db`
 already has the right schema/tiles.
+
+Every command on this page also runs in Docker, unchanged, by prefixing it
+with `docker compose run --rm pipeline` in place of `python` — see
+[README.md](README.md#run-with-docker).
 
 ## Scan the sky
 
@@ -95,8 +99,8 @@ python export_candidates.py --limit 500
 
 ## Common gotchas
 
-- `make_tiles.py` is archived in `tmp_old/` — it uses a different `tile_id`
-  format than what's actually in `survey.db`. Use `startup/populate.py`
-  instead for tile generation.
+- Always generate tiles via `startup/populate.py` — a different, older tile
+  generator existed on a prior machine with a `tile_id` format that doesn't
+  match what's actually in `survey.db`, and never made it into this repo.
 - `build_review.py` will print "No triaged candidates found" if you skip
   `score_candidates.py` first.

@@ -1,6 +1,9 @@
 # AI session notes (local-only, not repo content)
 MEMORY.md
 
+# Host-specific docker-compose settings (UID/GID)
+.env
+
 # Logs
 *.log
 

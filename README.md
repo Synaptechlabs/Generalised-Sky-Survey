@@ -1,7 +1,7 @@
 <!--
 File:        README.md
-Version:     0.1
-Date:        2026-07-11
+Version:     0.2
+Date:        2026-07-13
 Author:      Scott Douglass
 Description: Project description, pipeline overview, design notes, and
              command reference for GSS.
@@ -44,8 +44,35 @@ a standalone download, not read by any other script in the pipeline.
 ## Install
 
 ```bash
-pip install astroquery astropy pandas scikit-learn matplotlib numpy requests
+pip install -r requirements.txt
 ```
+
+## Run with Docker
+
+An alternative to the local install above. Builds a `python:3.13-slim`
+image with `requirements.txt` installed, and bind-mounts the repo into the
+container so `survey.db`, `figures/`, `review_pack/`, and `runner.log` land
+at their normal paths on the host rather than inside the container:
+
+```bash
+docker compose build
+```
+
+Every command in this README and in [quickstart.md](quickstart.md) works
+the same way, run through `docker compose run --rm pipeline` in place of
+`python` directly, e.g.:
+
+```bash
+docker compose run --rm pipeline python startup/init_db.py
+docker compose run --rm pipeline python scan_tile.py
+```
+
+`docker compose up` alone runs the default command, `run_pipeline.py --forever`.
+
+The container runs as the host user rather than root, so files it creates
+are owned correctly on the host. It reads `UID`/`GID` from a local `.env`
+file (not committed, since these differ per machine) and falls back to
+`1000:1000` if none is set.
 
 ## Initialise
 
@@ -162,3 +189,7 @@ The immediate goal is persistent survey state:
 - which objects became candidates
 - which crossmatches were already done
 - what the human review status is
+
+## License
+
+[MIT](LICENSE)
