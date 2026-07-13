@@ -1,0 +1,22 @@
+# AI session notes (local-only, not repo content)
+MEMORY.md
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Pipeline-generated data (rebuilt from survey.db, not source)
+survey.db
+survey.db-journal
+survey.db-wal
+figures/
+review_pack/
+thumbnails/
+*.csv
