@@ -1,0 +1,227 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GSS — Generalised Sky Survey</title>
+<style>
+:root {
+    --bg:#0f1117; --panel:#171a22; --panel2:#202532; --panel3:#11141c;
+    --text:#e7eaf0; --muted:#a9b0c2; --line:#343b4d; --link:#8fc7ff;
+    --accent:#ffd447; --bad:#ff6b6b; --good:#70c1b3;
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:28px; font-family:Arial, Helvetica, sans-serif; background:var(--bg); color:var(--text); max-width:1200px; margin-left:auto; margin-right:auto; }
+h1 { margin:0; font-size:26px; font-weight:normal; }
+h2 { margin:36px 0 14px; font-size:20px; font-weight:normal; border-bottom:1px solid var(--line); padding-bottom:8px; }
+h3 { margin:0 0 10px 0; font-size:15px; font-weight:normal; border-bottom:1px solid var(--line); padding-bottom:6px; }
+a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+.subtitle { color:var(--muted); margin:8px 0 4px; font-size:14px; }
+.subtle { color:var(--muted); margin:7px 0 22px; }
+.hero { padding-bottom:14px; border-bottom:1px solid var(--line); margin-bottom:8px; }
+ul.principles { margin:0; padding-left:20px; line-height:1.7; color:var(--muted); }
+.metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
+.metric { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+.metric-value { font-size:26px; font-weight:bold; } .metric-label { color:var(--muted); font-size:13px; margin-top:4px; }
+.dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.dash-grid > div, section { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:12px; }
+.count-row { position:relative; display:grid; grid-template-columns:1fr auto; gap:10px; padding:7px 0; border-bottom:1px solid #2d3445; overflow:hidden; }
+.count-row i { position:absolute; left:0; bottom:0; height:2px; background:#56617d; }
+.source-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+.skymap-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:16px; margin-bottom:20px; }
+.skymap-item img { width:100%; height:auto; border:1px solid var(--line); border-radius:8px; display:block; }
+.source-card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+.source-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.source-badge { font-weight:bold; font-size:14px; }
+.source-pct { color:var(--muted); font-size:13px; }
+.tile-bar { height:10px; border-radius:999px; overflow:hidden; display:flex; background:var(--panel3); border:1px solid var(--line); margin-bottom:12px; }
+.tile-bar i { display:block; height:100%; }
+.seg-complete { background:var(--good); }
+.seg-no-coverage { background:#56617d; }
+.seg-pending { background:#3a4257; }
+.seg-failed { background:var(--bad); }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin:8px 0 20px; }
+.legend span { display:inline-flex; align-items:center; gap:5px; }
+.legend i { width:10px; height:10px; border-radius:3px; display:inline-block; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th { text-align:left; color:var(--muted); font-weight:normal; padding:6px 8px 6px 0; }
+td { padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Consolas, monospace; }
+.compact th { width:55%; }
+footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+p { line-height:1.6; }
+code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:13px; }
+.quality-cuts { margin:10px 0 0; padding-left:20px; line-height:1.7; color:var(--muted); font-size:14px; }
+@media (max-width:900px) { .dash-grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<div class="hero">
+    <h1>GSS — Generalised Sky Survey</h1>
+    <p><a href="review_pack/review.html">Candidate review pack →</a></p>
+</div>
+
+<h2>Introduction</h2>
+<section>
+<p>GSS scans photometric survey catalogues on a per-tile basis, computes derived features from the raw measurements, and applies an Isolation Forest to identify objects with atypical feature values relative to the observed population. Identified candidates are cross-matched against SIMBAD, NED, and Gaia, assigned a set of derived diagnostic scores, and compiled for manual review.</p>
+<p>The pipeline currently ingests two catalogues: SDSS (photometric imaging) and Gaia DR3 (astrometry and photometry). Each is stored under a distinct source label, with independent tile-scan tracking per source.</p>
+<p>SDSS and Gaia report different quantities (SDSS: ugriz photometry and morphological parameters; Gaia: G/BP/RP photometry, parallax, proper motion). The anomaly-detection model is therefore restricted to two features computable identically from either source's photometry: the magnitude difference between the bluest and reddest available band, and the largest single adjacent-band colour difference. The Isolation Forest is fit once, across all objects from all sources, using only these two features. Source-specific measurements (SDSS morphology, Gaia astrometry) are retained for diagnostic scoring but do not enter the anomaly model.</p>
+</section>
+
+<h2>Methodology</h2>
+<section>
+
+<h3>1. Sky tiling</h3>
+<p>The sky is divided into 64,800 fixed 1°×1° tiles (360 steps in RA, 180 in Dec). Tile geometry (<code>sky_tiles</code>) is source-independent; scan progress (<code>tile_scans</code>) is recorded per (tile, source) pair, so a given tile's status is tracked separately for each catalogue. Tiles are scanned in order of increasing distance from the celestial equator (<code>ORDER BY ABS(dec_min) ASC</code>), reflecting the coverage geometry of ground-based optical surveys. Each (tile, source) pair takes one of five states: <code>pending</code>, <code>running</code>, <code>complete</code> (data found), <code>no_coverage</code> (no data at this position for this source; not retried), or <code>failed</code> (a query or processing error; retried).</p>
+
+<h3>2. Per-source ingestion and quality cuts</h3>
+<p>SDSS data are queried from <code>PhotoObj</code> via the DR17 SkyServer, restricted to <code>clean=1 AND type=3</code> (galaxies), with <code>u/g/r/i/z</code> magnitudes in approximately 10–25 (r: 10–22) and positive Petrosian radii. Rows are excluded if:</p>
+<ul class="quality-cuts">
+    <li>any of <code>psfMagErr_u/g/r/i/z</code> ≥ 0.5 mag,</li>
+    <li><code>petroRad_r</code> or <code>petroR50_r</code> ≤ 0.2 arcsec, or</li>
+    <li><code>petroR90_r</code> ≤ <code>petroR50_r</code>.</li>
+</ul>
+<p>Gaia data are queried from <code>gaiadr3.gaia_source</code> via the Gaia archive TAP service, restricted to the tile's RA/Dec bounds with non-null <code>phot_g_mean_mag</code>, <code>phot_bp_mean_mag</code>, and <code>phot_rp_mean_mag</code>. Rows are excluded if <code>phot_g_mean_mag</code> ≤ 0 or <code>parallax_error</code> ≤ 0.</p>
+
+<h3>3. Anomaly detection</h3>
+<p>Before fitting, each source's values for the two shared features are normalised against that source's own median and median absolute deviation (MAD), not the pooled population's. This is necessary because sources differ in both typical scale and sample density (e.g. Gaia currently contributes several times more rows than SDSS); without per-source normalisation, whichever source has the larger scale or denser sampling would dominate the fit, and an object's anomaly score would partly reflect which catalogue it came from rather than genuine rarity within that catalogue.</p>
+<p>A single scikit-learn <code>IsolationForest</code> (<code>n_estimators=500</code>, <code>max_samples=256</code>, <code>random_state=42</code>) is then fit against the normalised values of all objects from all sources scanned to date, using the two shared features described above (<code>global_colour_span, global_colour_jump</code>). The model is not refit per tile and is not fit separately per source. <code>anomaly_score</code> is the output of <code>score_samples()</code>; more negative values indicate greater isolation from the combined population. <code>contamination</code> is not used, as GSS calls only <code>score_samples()</code> and not <code>predict()</code> or <code>decision_function()</code>.</p>
+<p>Source-specific measurements — SDSS morphology (concentration, surface brightness, PSF-minus-model magnitude) and Gaia astrometry (parallax, proper motion, RUWE) — are not included in this model. They are used in the diagnostic scoring described in Section 4.</p>
+
+<h3>4. Evidence synthesis</h3>
+<p>Each candidate is assigned a set of derived diagnostics, flags, and a composite <code>review_score</code> (definitions version 0.2, last modified 2026-07-11). Scores are computed once and stored with the definition version that produced them, so a subsequent change to the scoring formula does not alter the record of what a candidate showed at the time of review. Diagnostics that depend on SDSS-specific morphology are omitted, rather than substituted with a default value, for sources that do not report morphology. Metric-level definitions are given on each candidate's review page.</p>
+
+<h3>5. Crossmatch</h3>
+<p>Each candidate is queried against SIMBAD and NED (30 arcsec search radius) and Gaia (10 arcsec search radius). A match does not exclude a candidate from review; it applies a fixed +0.25 penalty to the <code>artefact_risk</code> component of the review score.</p>
+
+<h3>Implementation notes</h3>
+<ul class="principles">
+    <li><code>survey.db</code> holds all pipeline state. CSV output is generated only for export.</li>
+    <li>Scoring definitions are versioned; a version change triggers rescoring rather than overwriting prior results silently.</li>
+    <li>Metric definitions are displayed alongside their values on the review page.</li>
+    <li>Pipeline runs commit incrementally and resume from the last committed state after interruption.</li>
+    <li>Sources are declared in a registry (<code>SOURCE_SCANNERS</code>) rather than referenced individually in pipeline code.</li>
+</ul>
+
+<h3>Design principles</h3>
+<ul class="principles">
+    <li>Preserve primary evidence.</li>
+    <li>Derived quantities are reproducible.</li>
+    <li>Interpretation is separated from observation.</li>
+    <li>Crossmatches are evidence, not exclusion criteria.</li>
+    <li>Pipeline stages are modular.</li>
+    <li>New surveys should require only source adapters.</li>
+</ul>
+</section>
+
+<h2>Summary</h2>
+<p class="subtle">Figures below are generated from <code>survey.db</code> (2069.6 MB, last modified 2026-07-12 18:36) at 2026-07-12 18:38.</p>
+
+<div class="metrics">
+    <div class="metric"><div class="metric-value">3,420,706</div><div class="metric-label">Objects scanned</div></div>
+    <div class="metric"><div class="metric-value">1,553,222</div><div class="metric-label">Candidates flagged</div></div>
+    <div class="metric"><div class="metric-value">19,500</div><div class="metric-label">Candidates triaged</div></div>
+    <div class="metric"><div class="metric-value">18.8%</div><div class="metric-label">Tiles resolved</div></div>
+    <div class="metric"><div class="metric-value">8.85</div><div class="metric-label">Mean review score</div></div>
+    <div class="metric"><div class="metric-value">0.87</div><div class="metric-label">Mean artefact risk</div></div>
+</div>
+
+<h2>Sky coverage</h2>
+<p class="subtle">Mollweide projection of scanned sky tiles, coloured by scan status, per source.</p>
+<div class="skymap-grid">
+    <div class="skymap-item"><img src="figures/skymap_gaia.png" alt="gaia tile coverage"></div>
+<div class="skymap-item"><img src="figures/skymap_sdss.png" alt="sdss tile coverage"></div>
+</div>
+
+<h2>Sources</h2>
+<div class="source-grid">
+    
+    <div class="source-card">
+        <div class="source-head">
+            <span class="source-badge">gaia</span>
+            <span class="source-pct">0.3% tiles resolved</span>
+        </div>
+        <div class="tile-bar">
+            <i class="seg-complete" style="width:0.25%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.75%"></i><i class="seg-failed" style="width:0.00%"></i>
+        </div>
+        <table class="compact">
+            <tr><th>Objects scanned</th><td>1,667,800</td></tr>
+            <tr><th>Candidates flagged</th><td>330,000</td></tr>
+            <tr><th>Candidates triaged</th><td>6,119</td></tr>
+            <tr><th>Tiles complete</th><td>163 / 64,800</td></tr>
+            <tr><th>Tiles no coverage</th><td>0</td></tr>
+            <tr><th>Tiles pending</th><td>64,637</td></tr>
+            <tr><th>Tiles failed</th><td>0</td></tr>
+        </table>
+    </div>
+    
+
+    <div class="source-card">
+        <div class="source-head">
+            <span class="source-badge">sdss</span>
+            <span class="source-pct">37.4% tiles resolved</span>
+        </div>
+        <div class="tile-bar">
+            <i class="seg-complete" style="width:1.17%"></i><i class="seg-no-coverage" style="width:36.25%"></i><i class="seg-pending" style="width:62.57%"></i><i class="seg-failed" style="width:0.00%"></i>
+        </div>
+        <table class="compact">
+            <tr><th>Objects scanned</th><td>1,752,906</td></tr>
+            <tr><th>Candidates flagged</th><td>1,223,222</td></tr>
+            <tr><th>Candidates triaged</th><td>13,381</td></tr>
+            <tr><th>Tiles complete</th><td>761 / 64,800</td></tr>
+            <tr><th>Tiles no coverage</th><td>23,492</td></tr>
+            <tr><th>Tiles pending</th><td>40,546</td></tr>
+            <tr><th>Tiles failed</th><td>0</td></tr>
+        </table>
+    </div>
+    
+</div>
+<div class="legend">
+    <span><i style="background:var(--good)"></i> complete</span>
+    <span><i style="background:#56617d"></i> no coverage</span>
+    <span><i style="background:#3a4257"></i> pending</span>
+    <span><i style="background:var(--bad)"></i> failed</span>
+</div>
+
+<h2>Triage &amp; review</h2>
+<div class="dash-grid">
+    <div>
+        <h3>Triage class distribution</h3>
+        <div class="count-row"><span>mixed_anomaly</span><b>7,545</b><i style="width:38.69%"></i></div><div class="count-row"><span>extreme_colour</span><b>4,498</b><i style="width:23.07%"></i></div><div class="count-row"><span>compact_red</span><b>4,004</b><i style="width:20.53%"></i></div><div class="count-row"><span>artefact_risk</span><b>1,847</b><i style="width:9.47%"></i></div><div class="count-row"><span>probable_shred</span><b>789</b><i style="width:4.05%"></i></div><div class="count-row"><span>large_diffuse</span><b>609</b><i style="width:3.12%"></i></div><div class="count-row"><span>possible_lsb</span><b>208</b><i style="width:1.07%"></i></div>
+    </div>
+    <div>
+        <h3>Human review status</h3>
+        <div class="count-row"><span>unreviewed</span><b>1,546,695</b><i style="width:100.00%"></i></div>
+    </div>
+</div>
+
+<h2>Crossmatch coverage</h2>
+<div class="metrics">
+    <div class="metric"><div class="metric-value">1,224</div><div class="metric-label">Candidates crossmatched</div></div>
+    <div class="metric"><div class="metric-value">310</div><div class="metric-label">SIMBAD matches</div></div>
+    <div class="metric"><div class="metric-value">484</div><div class="metric-label">NED matches</div></div>
+    <div class="metric"><div class="metric-value">292</div><div class="metric-label">Gaia matches</div></div>
+</div>
+
+<h2>Recent runs</h2>
+<table>
+    <tr><th>Run ID</th><th>Type</th><th>Status</th><th>Started</th><th>Finished</th></tr>
+    <tr><td>1707</td><td>scan_tile</td><td>running</td><td>2026-07-12 08:36:42</td><td>—</td></tr>
+<tr><td>1706</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:34:23</td><td>2026-07-12 08:36:34</td></tr>
+<tr><td>1705</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:32:15</td><td>2026-07-12 08:34:18</td></tr>
+<tr><td>1704</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:30:05</td><td>2026-07-12 08:32:06</td></tr>
+<tr><td>1703</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:28:03</td><td>2026-07-12 08:30:01</td></tr>
+<tr><td>1702</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:25:57</td><td>2026-07-12 08:27:55</td></tr>
+<tr><td>1701</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:23:48</td><td>2026-07-12 08:25:52</td></tr>
+<tr><td>1700</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:21:35</td><td>2026-07-12 08:23:40</td></tr>
+<tr><td>1699</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:19:32</td><td>2026-07-12 08:21:30</td></tr>
+<tr><td>1698</td><td>score_candidates</td><td>finished</td><td>2026-07-12 08:19:04</td><td>2026-07-12 08:19:24</td></tr>
+<tr><td>1697</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:16:58</td><td>2026-07-12 08:19:03</td></tr>
+<tr><td>1696</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:14:32</td><td>2026-07-12 08:16:51</td></tr>
+</table>
+
+<footer>
+    GSS — Generalised Sky Survey. See <code>README.md</code> for the full command reference and <code>quickstart.md</code> to run the pipeline yourself.
+</footer>
+
+</body>
+</html>
