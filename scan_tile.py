@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        scan_tile.py
-# Version:     0.2
-# Date:        2026-07-12
+# Version:     0.3
+# Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Queries SDSS for one sky tile, cleans/engineers features,
 #              fits a global Isolation Forest (per-source normalized, see
@@ -246,6 +246,15 @@ def load_all_global_features(con):
     Forest fit is deliberately global across the whole survey, not siloed
     per source. Only GLOBAL_FEATURE_COLS is safe to use here since that's
     the one feature set every source populates the same way.
+
+    This IS NOT NULL filter is also the ONLY thing excluding reference-only
+    sources (currently just WISE, see features_wise.py) from the fit --
+    there is no separate allowlist/registry of "which sources feed the
+    forest". WISE deliberately never populates GLOBAL_FEATURE_COLS, so it
+    never passes this filter. If this filter is ever loosened or replaced,
+    check what sources would newly be admitted -- a source silently
+    entering the pooled fit here produces no error, just a contaminated
+    anomaly_score.
     """
     where_clause = " AND ".join(f"f.{c} IS NOT NULL" for c in GLOBAL_FEATURE_COLS)
     query = f"""
