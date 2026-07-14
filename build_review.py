@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # File:        build_review.py
-# Version:     0.4
+# Version:     0.5
 # Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Builds the review_pack/review.html candidate review page
@@ -21,6 +21,7 @@ from thumbnails import get_thumbnail, skyserver_url, sdss_stamp_url
 from triage import METRIC_DEFINITIONS, DEFINITIONS_VERSION, DEFINITIONS_UPDATED
 from wise_cutouts import get_wise_cutouts, wise_viewer_url
 from rank_tracking import latest_cycle, new_entrants
+from scan_tile_wise import backfill_coadd_id
 
 DEFAULT_DB = "survey.db"
 DEFAULT_REVIEW_DIR = Path("review_pack")
@@ -152,12 +153,21 @@ def crossmatch_summary(row):
     return "<br>".join(parts) if parts else "No catalogue match recorded"
 
 
-def wise_cutout_row(row, thumb_dir: Path, review_dir: Path, download_thumbnails: bool) -> str:
+def wise_cutout_row(row, thumb_dir: Path, review_dir: Path, download_thumbnails: bool, con) -> str:
     if not safe_float(row.get("wise_match"), 0):
         return ""
     wise_objid = row.get("wise_objID")
+    if wise_objid is None or pd.isna(wise_objid):
+        return ""
+
     coadd_id = row.get("wise_coadd_id")
-    if wise_objid is None or pd.isna(wise_objid) or not coadd_id or pd.isna(coadd_id):
+    if (not coadd_id or pd.isna(coadd_id)) and download_thumbnails:
+        # Atomic data check: this object was ingested before coadd_id was
+        # tracked (see scan_tile_wise.py). A single-object TAP lookup is
+        # cheap and precise -- no need to wait for/trigger a tile rescan
+        # just to render one card's imagery.
+        coadd_id = backfill_coadd_id(con, int(wise_objid))
+    if not coadd_id or pd.isna(coadd_id):
         return ""
 
     w1_path, w2_path, composite_path = get_wise_cutouts(
@@ -284,7 +294,7 @@ def definitions_card() -> str:
     """
 
 
-def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumbnails: bool, entrants: dict) -> str:
+def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumbnails: bool, entrants: dict, con) -> str:
     source = row.get("source", "")
     objid = int(row.get("objID"))
     ra, dec = row.get("ra"), row.get("dec")
@@ -316,7 +326,7 @@ def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumb
                     <a href="{esc(sdss_stamp_url(ra, dec))}" target="_blank">SDSS JPEG</a>
                     <a href="{esc(wise_viewer_url(ra, dec))}" target="_blank">IRSA WISE viewer</a>
                 </div>
-                {wise_cutout_row(row, thumb_dir, review_dir, download_thumbnails)}
+                {wise_cutout_row(row, thumb_dir, review_dir, download_thumbnails, con)}
                 {wise_panel(row)}
                 {definitions_card()}
             </div>
@@ -430,11 +440,11 @@ def make_dashboard(df: pd.DataFrame) -> str:
 
 
 def make_html(df: pd.DataFrame, db_path: str, thumb_dir: Path, review_dir: Path,
-              download_thumbnails: bool, entrants: dict, max_cards: int | None = None) -> str:
+              download_thumbnails: bool, entrants: dict, con, max_cards: int | None = None) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     shown = df if max_cards is None else df.head(max_cards)
     cards = "\n".join(
-        make_card(row, i, thumb_dir, review_dir, download_thumbnails, entrants)
+        make_card(row, i, thumb_dir, review_dir, download_thumbnails, entrants, con)
         for i, (_, row) in enumerate(shown.iterrows(), start=1)
     )
     return f"""<!doctype html>
@@ -558,12 +568,14 @@ def build_review(
     try:
         cycle = latest_cycle(con)
         entrants = new_entrants(con, cycle) if cycle is not None else {}
+
+        output_html.parent.mkdir(parents=True, exist_ok=True)
+        html_text = make_html(df, db_path=db_path, thumb_dir=thumb_dir, review_dir=review_dir,
+                               download_thumbnails=download_thumbnails, entrants=entrants,
+                               con=con, max_cards=max_cards)
     finally:
         con.close()
 
-    output_html.parent.mkdir(parents=True, exist_ok=True)
-    html_text = make_html(df, db_path=db_path, thumb_dir=thumb_dir, review_dir=review_dir,
-                           download_thumbnails=download_thumbnails, entrants=entrants, max_cards=max_cards)
     output_html.write_text(html_text, encoding="utf-8")
     return df
 

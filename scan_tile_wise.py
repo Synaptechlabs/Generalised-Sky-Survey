@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # File:        scan_tile_wise.py
-# Version:     0.3
+# Version:     0.4
 # Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Queries AllWISE (via IRSA's TAP service) for one sky tile,
@@ -49,6 +49,39 @@ def wise_query_for_tile(ra_min, ra_max, dec_min, dec_max, limit):
         AND w1mpro IS NOT NULL
         AND w2mpro IS NOT NULL
     """
+
+
+def backfill_coadd_id(con, wise_objid):
+    """
+    On-demand single-object coadd_id lookup + persist for one already-
+    ingested WISE object -- an atomic data check, not a rescan: given a
+    cntr, coadd_id is a single fixed catalogue field, so this is a direct
+    TAP lookup by primary key rather than the tile-bounded query above.
+    Used by build_review.py to backfill a card's cutout imagery on the
+    spot when coadd_id is missing (objects ingested before that column
+    existed -- see the file header), mirroring how thumbnails/cutouts
+    already lazy-fetch missing images at build time rather than requiring
+    a rescan. Returns the coadd_id on success, None if the lookup failed
+    or the object has no coadd_id recorded (persists nothing in that case).
+    """
+    try:
+        table = Irsa.query_tap(
+            f"SELECT TOP 1 coadd_id FROM allwise_p3as_psd WHERE cntr = {int(wise_objid)}"
+        ).to_table()
+    except Exception as e:
+        print(f"coadd_id backfill failed for wise objID={wise_objid}: {e}")
+        return None
+
+    if len(table) == 0 or table["coadd_id"][0] is None:
+        return None
+
+    coadd_id = str(table["coadd_id"][0])
+    con.execute(
+        "UPDATE objects SET coadd_id=? WHERE source='wise' AND objID=? AND coadd_id IS NULL",
+        (coadd_id, wise_objid),
+    )
+    con.commit()
+    return coadd_id
 
 
 def main():
