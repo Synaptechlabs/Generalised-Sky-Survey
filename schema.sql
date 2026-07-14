@@ -1,7 +1,7 @@
 -- ---------------------------------------------------------------------------
 -- File:        schema.sql
--- Version:     0.2
--- Date:        2026-07-13
+-- Version:     0.3
+-- Date:        2026-07-14
 -- Author:      Scott Douglass
 -- Description: SQLite schema for survey.db -- tiles, objects, features,
 --              candidates, crossmatches, reviews, and triage tables.
@@ -94,6 +94,10 @@ CREATE TABLE IF NOT EXISTS objects (
     w2mpro REAL, w2sigmpro REAL,
     w3mpro REAL, w3sigmpro REAL,
     w4mpro REAL, w4sigmpro REAL,
+    -- AllWISE coadd image tile ID (added 2026-07-14), needed to fetch a
+    -- WISE FITS cutout (see wise_cutouts.py). NULL for objects ingested
+    -- before this column existed -- see scan_tile_wise.py.
+    coadd_id TEXT,
     PRIMARY KEY(source, objID),
     FOREIGN KEY(first_seen_run_id) REFERENCES runs(run_id),
     FOREIGN KEY(last_seen_run_id) REFERENCES runs(run_id)

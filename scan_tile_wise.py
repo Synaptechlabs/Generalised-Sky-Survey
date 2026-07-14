@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        scan_tile_wise.py
-# Version:     0.1
-# Date:        2026-07-13
+# Version:     0.2
+# Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Queries AllWISE (via IRSA's TAP service) for one sky tile,
 #              cleans/engineers w1_w2/w2_w3, and caches objects/features in
@@ -12,6 +12,12 @@
 #              candidates against locally, not scored by the shared
 #              Isolation Forest (see features_wise.py). Tile selection is
 #              still imported directly from scan_tile.py, not duplicated.
+#              coadd_id (added 2026-07-14) identifies the AllWISE coadd
+#              image tile an object was measured on, needed to fetch its
+#              FITS cutout (see wise_cutouts.py) -- objects ingested before
+#              this field was added have coadd_id=NULL and simply won't
+#              have a cutout available (see upsert_objects: raw measurement
+#              columns are only ever written once, at first-seen).
 # ---------------------------------------------------------------------------
 import argparse
 
@@ -27,7 +33,7 @@ SOURCE = "wise"
 def wise_query_for_tile(ra_min, ra_max, dec_min, dec_max, limit):
     return f"""
     SELECT TOP {int(limit)}
-        cntr, ra, dec,
+        cntr, coadd_id, ra, dec,
         w1mpro, w1sigmpro,
         w2mpro, w2sigmpro,
         w3mpro, w3sigmpro,
@@ -180,7 +186,7 @@ def _sql_none_if_nan(value):
 
 def upsert_objects(con, df, source, run_id, tile_id):
     object_cols = [
-        "cntr", "ra", "dec",
+        "cntr", "coadd_id", "ra", "dec",
         "w1mpro", "w1sigmpro",
         "w2mpro", "w2sigmpro",
         "w3mpro", "w3sigmpro",
@@ -192,7 +198,7 @@ def upsert_objects(con, df, source, run_id, tile_id):
         con.execute(
             """
             INSERT INTO objects(
-                source, objID, ra, dec,
+                source, objID, coadd_id, ra, dec,
                 w1mpro, w1sigmpro,
                 w2mpro, w2sigmpro,
                 w3mpro, w3sigmpro,
@@ -200,7 +206,7 @@ def upsert_objects(con, df, source, run_id, tile_id):
                 first_seen_run_id, last_seen_run_id
             )
             VALUES (
-                :source, :cntr, :ra, :dec,
+                :source, :cntr, :coadd_id, :ra, :dec,
                 :w1mpro, :w1sigmpro,
                 :w2mpro, :w2sigmpro,
                 :w3mpro, :w3sigmpro,

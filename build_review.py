@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        build_review.py
-# Version:     0.2
-# Date:        2026-07-13
+# Version:     0.3
+# Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Builds the review_pack/review.html candidate review page
 #              directly from survey.db, including per-card metric
@@ -19,6 +19,7 @@ import pandas as pd
 
 from thumbnails import get_thumbnail, skyserver_url, sdss_stamp_url
 from triage import METRIC_DEFINITIONS, DEFINITIONS_VERSION, DEFINITIONS_UPDATED
+from wise_cutouts import get_wise_cutouts, wise_viewer_url
 
 DEFAULT_DB = "survey.db"
 DEFAULT_REVIEW_DIR = Path("review_pack")
@@ -74,6 +75,7 @@ def load_candidates(db_path: str, limit: int, min_review_score: float | None = N
             wo.w2mpro AS wise_w2mpro, wo.w2sigmpro AS wise_w2sigmpro,
             wo.w3mpro AS wise_w3mpro, wo.w3sigmpro AS wise_w3sigmpro,
             wo.w4mpro AS wise_w4mpro, wo.w4sigmpro AS wise_w4sigmpro,
+            wo.coadd_id AS wise_coadd_id,
             wf.w2_w3 AS wise_w2_w3,
 
             rv.status, rv.priority AS human_priority, rv.human_notes,
@@ -132,6 +134,36 @@ def crossmatch_summary(row):
     # WISE is deliberately not repeated here -- see wise_panel(), shown in
     # the image panel alongside the thumbnail instead of this text summary.
     return "<br>".join(parts) if parts else "No catalogue match recorded"
+
+
+def wise_cutout_row(row, thumb_dir: Path, review_dir: Path, download_thumbnails: bool) -> str:
+    if not safe_float(row.get("wise_match"), 0):
+        return ""
+    wise_objid = row.get("wise_objID")
+    coadd_id = row.get("wise_coadd_id")
+    if wise_objid is None or pd.isna(wise_objid) or not coadd_id or pd.isna(coadd_id):
+        return ""
+
+    w1_path, w2_path, composite_path = get_wise_cutouts(
+        thumb_dir, wise_objid, coadd_id, row.get("ra"), row.get("dec"),
+        download_missing=download_thumbnails,
+    )
+    if not any((w1_path, w2_path, composite_path)):
+        return ""
+
+    def cutout_img(path, label):
+        if not path:
+            return f'<div class="wise-cutout"><div class="missing-thumb">No image</div><span>{esc(label)}</span></div>'
+        rel = Path(path).relative_to(review_dir).as_posix()
+        return f'<div class="wise-cutout"><img src="{esc(rel)}" alt="WISE {esc(label)} cutout"><span>{esc(label)}</span></div>'
+
+    return f"""
+    <div class="wise-cutout-row">
+        {cutout_img(w1_path, "W1")}
+        {cutout_img(w2_path, "W2")}
+        {cutout_img(composite_path, "W1+W2")}
+    </div>
+    """
 
 
 def wise_panel(row):
@@ -265,7 +297,9 @@ def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumb
                 <div class="links">
                     <a href="{esc(skyserver_url(objid))}" target="_blank">SkyServer</a>
                     <a href="{esc(sdss_stamp_url(ra, dec))}" target="_blank">SDSS JPEG</a>
+                    <a href="{esc(wise_viewer_url(ra, dec))}" target="_blank">IRSA WISE viewer</a>
                 </div>
+                {wise_cutout_row(row, thumb_dir, review_dir, download_thumbnails)}
                 {wise_panel(row)}
                 {definitions_card()}
             </div>
@@ -427,7 +461,12 @@ a {{ color:var(--link); text-decoration:none; }} a:hover {{ text-decoration:unde
 .card-body {{ display:grid; grid-template-columns:540px 1fr; gap:22px; align-items:start; }}
 .thumb, .missing-thumb {{ width:512px; height:512px; object-fit:contain; background:#000; border:1px solid var(--line); border-radius:10px; }}
 .missing-thumb {{ display:grid; place-items:center; color:var(--muted); }}
-.links {{ margin-top:10px; display:flex; gap:14px; }}
+.links {{ margin-top:10px; display:flex; gap:14px; flex-wrap:wrap; }}
+.wise-cutout-row {{ margin-top:14px; width:512px; display:flex; gap:8px; }}
+.wise-cutout {{ flex:1; text-align:center; }}
+.wise-cutout img, .wise-cutout .missing-thumb {{ width:100%; aspect-ratio:1/1; object-fit:contain; background:#000; border:1px solid var(--line); border-radius:8px; display:block; }}
+.wise-cutout .missing-thumb {{ display:grid; place-items:center; color:var(--muted); font-size:11px; }}
+.wise-cutout span {{ display:block; margin-top:4px; font-size:11px; color:var(--muted); }}
 .wise-panel {{ margin-top:14px; width:512px; }}
 .wise-panel h3 {{ font-size:14px; display:flex; gap:8px; align-items:center; }}
 .definitions {{ margin-top:14px; width:512px; }}
@@ -453,7 +492,7 @@ td {{ padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Conso
 .bar {{ height:12px; background:var(--panel3); border:1px solid var(--line); border-radius:999px; overflow:hidden; }}
 .bar i {{ display:block; height:100%; background:#65718e; }}
 .bar-row b {{ font-family:Consolas, monospace; font-weight:normal; color:var(--text); }}
-@media (max-width:1100px) {{ .card-body, .dash-grid {{ grid-template-columns:1fr; }} .thumb,.missing-thumb,.wise-panel,.definitions {{ width:100%; max-width:512px; }} }}
+@media (max-width:1100px) {{ .card-body, .dash-grid {{ grid-template-columns:1fr; }} .thumb,.missing-thumb,.wise-cutout-row,.wise-panel,.definitions {{ width:100%; max-width:512px; }} }}
 </style>
 </head>
 <body>
