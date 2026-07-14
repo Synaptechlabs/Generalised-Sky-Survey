@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        triage.py
-# Version:     0.1
-# Date:        2026-07-11
+# Version:     0.2
+# Date:        2026-07-13
 # Author:      Scott Douglass
 # Description: Pure scoring logic for candidate triage (derived
 #              diagnostics, flags, review_score) plus the versioned metric
@@ -19,8 +19,14 @@ constants/definitions to render them on each candidate card.
 """
 import math
 
-DEFINITIONS_VERSION = "0.2"
-DEFINITIONS_UPDATED = "2026-07-11"
+DEFINITIONS_VERSION = "0.3"
+DEFINITIONS_UPDATED = "2026-07-13"
+
+# W1-W2 > 0.8 mag is the standard AllWISE AGN colour cut (Stern et al. 2012;
+# Assef et al. 2013) -- also picked up by dusty/reddened sources and cool
+# (L/T) dwarfs, hence "AGN/dust/cool-dwarf discriminator" rather than a
+# clean AGN selector on its own.
+WISE_RED_EXCESS_THRESHOLD = 0.8
 
 
 def safe_float(value, default=math.nan):
@@ -151,6 +157,15 @@ def add_candidate_triage(row: dict) -> dict:
                 gaia_known = True
                 break
 
+    # WISE match: an independent rule check joined in via crossmatches,
+    # same as simbad/ned/gaia above -- not an input to the Isolation Forest
+    # (see global_features.py / features_wise.py for why w1_w2 can't be).
+    # No match at all simply means the flag can't evaluate and doesn't fire.
+    wise_match_val = row.get("wise_match")
+    wise_matched = wise_match_val is not None and not _isna(wise_match_val) and str(wise_match_val).strip() not in ("", "0", "False", "false")
+    wise_w1_w2 = safe_float(row.get("wise_w1_w2"))
+    flag_wise_red_excess = wise_matched and math.isfinite(wise_w1_w2) and wise_w1_w2 > WISE_RED_EXCESS_THRESHOLD
+
     # Flags. These are intentionally conservative so one broad condition cannot flood the report.
     flag_extreme_colour = (
         colour_jump_max > 2.8
@@ -214,6 +229,8 @@ def add_candidate_triage(row: dict) -> dict:
         weirdness_score += 0.75
     if flag_extreme_colour:
         weirdness_score += 0.75
+    if flag_wise_red_excess:
+        weirdness_score += 0.75
 
     artefact_risk = 0.0
     if flag_likely_model_issue:
@@ -255,6 +272,8 @@ def add_candidate_triage(row: dict) -> dict:
         flags.append("gaia_matched")
     if flag_catalogued:
         flags.append("catalogued")
+    if flag_wise_red_excess:
+        flags.append("wise_red_excess")
 
     if artefact_risk >= 5.0 or flag_likely_model_issue:
         triage_class = "artefact_risk"
@@ -299,6 +318,7 @@ def add_candidate_triage(row: dict) -> dict:
         "flag_probable_shred": int(flag_probable_shred),
         "flag_gaia_matched": int(flag_gaia_matched),
         "flag_catalogued": int(flag_catalogued),
+        "flag_wise_red_excess": int(flag_wise_red_excess),
     }
 
 
@@ -388,10 +408,10 @@ METRIC_DEFINITIONS = [
     {
         "key": "triage_flags",
         "label": "Triage flags",
-        "what": "Independent yes/no diagnostic flags, any of which may apply to the same object: extreme_colour, likely_model_issue, possible_lsb, compact_red, probable_shred, gaia_matched, catalogued.",
+        "what": "Independent yes/no diagnostic flags, any of which may apply to the same object: extreme_colour, likely_model_issue, possible_lsb, compact_red, probable_shred, gaia_matched, catalogued, wise_red_excess.",
         "formula": "Each flag is a fixed threshold rule over the diagnostics above -- see triage.py:add_candidate_triage for the exact conditions.",
         "why": "Gives reviewers specific, checkable reasons an object was flagged, instead of just a single opaque score.",
-        "interpret": "catalogued/gaia_matched are soft signals only -- known objects are not dropped, just slightly deprioritised (+0.25 artefact_risk).",
+        "interpret": "catalogued/gaia_matched are soft signals only -- known objects are not dropped, just slightly deprioritised (+0.25 artefact_risk). wise_red_excess (W1-W2 > 0.8 mag on a locally crossmatched WISE source) only evaluates when a WISE match exists at all -- no match means the flag can't fire, not that it's false.",
     },
     {
         "key": "triage_class",

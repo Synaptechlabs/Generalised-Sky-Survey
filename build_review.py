@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        build_review.py
-# Version:     0.1
-# Date:        2026-07-11
+# Version:     0.2
+# Date:        2026-07-13
 # Author:      Scott Douglass
 # Description: Builds the review_pack/review.html candidate review page
 #              directly from survey.db, including per-card metric
@@ -68,6 +68,13 @@ def load_candidates(db_path: str, limit: int, min_review_score: float | None = N
             x.simbad_match, x.simbad_id, x.simbad_otype,
             x.ned_match, x.ned_name, x.ned_type,
             x.gaia_match, x.gaia_source_id, x.gaia_dist,
+            x.wise_match, x.wise_objID, x.wise_dist, x.wise_w1_w2,
+
+            wo.w1mpro AS wise_w1mpro, wo.w1sigmpro AS wise_w1sigmpro,
+            wo.w2mpro AS wise_w2mpro, wo.w2sigmpro AS wise_w2sigmpro,
+            wo.w3mpro AS wise_w3mpro, wo.w3sigmpro AS wise_w3sigmpro,
+            wo.w4mpro AS wise_w4mpro, wo.w4sigmpro AS wise_w4sigmpro,
+            wf.w2_w3 AS wise_w2_w3,
 
             rv.status, rv.priority AS human_priority, rv.human_notes,
 
@@ -76,11 +83,13 @@ def load_candidates(db_path: str, limit: int, min_review_score: float | None = N
             t.triage_class, t.triage_flags,
             t.full_red_score, t.colour_smoothness, t.colour_jump_max,
             t.psf_per_radius, t.compactness_proxy, t.surface_brightness_offset,
-            t.flag_gaia_matched, t.flag_catalogued
+            t.flag_gaia_matched, t.flag_catalogued, t.flag_wise_red_excess
         FROM candidates c
         JOIN objects o ON o.source = c.source AND o.objID = c.objID
         JOIN features f ON f.source = c.source AND f.objID = c.objID
         LEFT JOIN crossmatches x ON x.source = c.source AND x.objID = c.objID
+        LEFT JOIN objects wo ON wo.source = 'wise' AND wo.objID = x.wise_objID
+        LEFT JOIN features wf ON wf.source = 'wise' AND wf.objID = x.wise_objID
         LEFT JOIN reviews rv ON rv.source = c.source AND rv.objID = c.objID
         JOIN triage t ON t.candidate_id = c.candidate_id
         """
@@ -120,7 +129,41 @@ def crossmatch_summary(row):
         gid = str(row.get("gaia_source_id", "")).strip()
         dist = fmt(row.get("gaia_dist"), 3)
         parts.append(f"Gaia: {esc(gid or 'match')} / dist {dist} arcsec")
+    # WISE is deliberately not repeated here -- see wise_panel(), shown in
+    # the image panel alongside the thumbnail instead of this text summary.
     return "<br>".join(parts) if parts else "No catalogue match recorded"
+
+
+def wise_panel(row):
+    if not safe_float(row.get("wise_match"), 0):
+        return ""
+
+    bands = [
+        ("W1", row.get("wise_w1mpro"), row.get("wise_w1sigmpro")),
+        ("W2", row.get("wise_w2mpro"), row.get("wise_w2sigmpro")),
+        ("W3", row.get("wise_w3mpro"), row.get("wise_w3sigmpro")),
+        ("W4", row.get("wise_w4mpro"), row.get("wise_w4sigmpro")),
+    ]
+    band_rows = "".join(
+        f"<tr><th>{b}</th><td>{fmt(mag, 3)}{f' &plusmn; {fmt(err, 3)}' if safe_float(err) is not None else ''}</td></tr>"
+        for b, mag, err in bands
+        if safe_float(mag) is not None
+    )
+
+    red_excess = safe_float(row.get("flag_wise_red_excess"), 0)
+    excess_pill = '<span class="pill">wise_red_excess</span>' if red_excess else ""
+
+    return f"""
+    <div class="wise-panel">
+        <h3>WISE crossmatch {excess_pill}</h3>
+        <p class="subtle" style="margin:0 0 8px">objID {esc(row.get('wise_objID'))} &middot; {fmt(row.get('wise_dist'), 3)} arcsec</p>
+        <table class="compact">
+            {band_rows}
+            <tr><th>W1-W2</th><td>{fmt(row.get('wise_w1_w2'), 3)}</td></tr>
+            <tr><th>W2-W3</th><td>{fmt(row.get('wise_w2_w3'), 3)}</td></tr>
+        </table>
+    </div>
+    """
 
 
 def metric_card(label, value):
@@ -223,6 +266,7 @@ def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumb
                     <a href="{esc(skyserver_url(objid))}" target="_blank">SkyServer</a>
                     <a href="{esc(sdss_stamp_url(ra, dec))}" target="_blank">SDSS JPEG</a>
                 </div>
+                {wise_panel(row)}
                 {definitions_card()}
             </div>
 
@@ -306,6 +350,7 @@ def make_dashboard(df: pd.DataFrame) -> str:
     mean_risk = fmt(df['artefact_risk'].mean() if n and 'artefact_risk' in df.columns else None, 2)
     gaia = int(df.get('flag_gaia_matched', pd.Series(dtype=int)).sum()) if n else 0
     cat = int(df.get('flag_catalogued', pd.Series(dtype=int)).sum()) if n else 0
+    wise_red = int(df.get('flag_wise_red_excess', pd.Series(dtype=int)).sum()) if n else 0
 
     counts_html = ""
     if n and 'triage_class' in df.columns:
@@ -322,6 +367,7 @@ def make_dashboard(df: pd.DataFrame) -> str:
             {metric_card('Top class', top_class)}
             {metric_card('Gaia matched', gaia)}
             {metric_card('Catalogued', cat)}
+            {metric_card('WISE red excess', wise_red)}
         </div>
         <div class="dash-grid">
             <div><h3>Review score histogram</h3>{histogram(df['review_score']) if 'review_score' in df else ''}</div>
@@ -382,6 +428,8 @@ a {{ color:var(--link); text-decoration:none; }} a:hover {{ text-decoration:unde
 .thumb, .missing-thumb {{ width:512px; height:512px; object-fit:contain; background:#000; border:1px solid var(--line); border-radius:10px; }}
 .missing-thumb {{ display:grid; place-items:center; color:var(--muted); }}
 .links {{ margin-top:10px; display:flex; gap:14px; }}
+.wise-panel {{ margin-top:14px; width:512px; }}
+.wise-panel h3 {{ font-size:14px; display:flex; gap:8px; align-items:center; }}
 .definitions {{ margin-top:14px; width:512px; }}
 .definitions h3 {{ font-size:14px; }}
 .def-item {{ padding:8px 0; border-bottom:1px solid #2d3445; }}
@@ -405,7 +453,7 @@ td {{ padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Conso
 .bar {{ height:12px; background:var(--panel3); border:1px solid var(--line); border-radius:999px; overflow:hidden; }}
 .bar i {{ display:block; height:100%; background:#65718e; }}
 .bar-row b {{ font-family:Consolas, monospace; font-weight:normal; color:var(--text); }}
-@media (max-width:1100px) {{ .card-body, .dash-grid {{ grid-template-columns:1fr; }} .thumb,.missing-thumb,.definitions {{ width:100%; max-width:512px; }} }}
+@media (max-width:1100px) {{ .card-body, .dash-grid {{ grid-template-columns:1fr; }} .thumb,.missing-thumb,.wise-panel,.definitions {{ width:100%; max-width:512px; }} }}
 </style>
 </head>
 <body>

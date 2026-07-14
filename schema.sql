@@ -1,7 +1,7 @@
 -- ---------------------------------------------------------------------------
 -- File:        schema.sql
--- Version:     0.1
--- Date:        2026-07-11
+-- Version:     0.2
+-- Date:        2026-07-13
 -- Author:      Scott Douglass
 -- Description: SQLite schema for survey.db -- tiles, objects, features,
 --              candidates, crossmatches, reviews, and triage tables.
@@ -54,9 +54,14 @@ CREATE TABLE IF NOT EXISTS tile_scans (
 -- Wide, nullable, multi-source table: SDSS-specific columns (u/g/r/i/z,
 -- petroRad_r, etc.) are populated for source='sdss' rows and NULL for
 -- other sources; Gaia-specific columns (phot_g_mean_mag, parallax, ruwe,
--- etc.) are populated for source='gaia' rows and NULL for SDSS. Follows
--- the precedent set by features.r/extinction_r (added post-launch, see
--- MEMORY.md) rather than a separate per-source table.
+-- etc.) are populated for source='gaia' rows and NULL for SDSS. WISE
+-- columns (w1mpro..w4mpro, added 2026-07-13) follow the same precedent.
+-- WISE's own catalogue ID (AllWISE 'source_id') is a text designation, not
+-- an integer, so objID for source='wise' rows holds 'cntr' instead -- the
+-- catalogue's actual unique int64 key -- matching the role objID/source_id
+-- play for SDSS/Gaia. W3/W4 are nullable independently of W1/W2: AllWISE
+-- detects W1/W2 far more often than the shallower W3/W4 bands, so requiring
+-- all four would silently gut the ingested sample.
 CREATE TABLE IF NOT EXISTS objects (
     source TEXT NOT NULL,
     objID INTEGER NOT NULL,
@@ -85,6 +90,10 @@ CREATE TABLE IF NOT EXISTS objects (
     pmdec REAL,
     ruwe REAL,
     astrometric_excess_noise REAL,
+    w1mpro REAL, w1sigmpro REAL,
+    w2mpro REAL, w2sigmpro REAL,
+    w3mpro REAL, w3sigmpro REAL,
+    w4mpro REAL, w4sigmpro REAL,
     PRIMARY KEY(source, objID),
     FOREIGN KEY(first_seen_run_id) REFERENCES runs(run_id),
     FOREIGN KEY(last_seen_run_id) REFERENCES runs(run_id)
@@ -133,6 +142,15 @@ CREATE TABLE IF NOT EXISTS features (
     -- since they don't exist across all sources.
     global_colour_span REAL,
     global_colour_jump REAL,
+    -- WISE-only diagnostics (added 2026-07-13). Deliberately NOT part of
+    -- the survey-agnostic pair above -- features_wise.py never populates
+    -- global_colour_span/global_colour_jump for source='wise' rows, so
+    -- load_all_global_features()'s IS NOT NULL filter (scan_tile.py)
+    -- naturally excludes WISE from the shared Isolation Forest fit rather
+    -- than needing special-case code. w1_w2/w2_w3 instead reach candidates
+    -- only via a crossmatch join, feeding triage.py's wise_red_excess flag.
+    w1_w2 REAL,
+    w2_w3 REAL,
     PRIMARY KEY(source, objID),
     FOREIGN KEY(source, objID) REFERENCES objects(source, objID)
 );
@@ -170,6 +188,15 @@ CREATE TABLE IF NOT EXISTS crossmatches (
     gaia_match INTEGER DEFAULT 0,
     gaia_source_id TEXT,
     gaia_dist REAL,
+    -- WISE match (added 2026-07-13), unlike simbad_*/ned_*/gaia_* above, is
+    -- looked up locally against already-ingested objects/features rows
+    -- (source='wise') rather than a live external query -- see
+    -- crossmatch_candidates.py. wise_objID is the matched row's cntr.
+    wise_checked_at TEXT,
+    wise_match INTEGER DEFAULT 0,
+    wise_objID INTEGER,
+    wise_dist REAL,
+    wise_w1_w2 REAL,
     PRIMARY KEY(source, objID),
     FOREIGN KEY(source, objID) REFERENCES objects(source, objID)
 );
@@ -220,6 +247,7 @@ CREATE TABLE IF NOT EXISTS triage (
     flag_probable_shred INTEGER,
     flag_gaia_matched INTEGER,
     flag_catalogued INTEGER,
+    flag_wise_red_excess INTEGER,
     computed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(candidate_id) REFERENCES candidates(candidate_id)
 );

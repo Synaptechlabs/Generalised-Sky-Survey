@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        build_landing.py
-# Version:     0.1
-# Date:        2026-07-11
+# Version:     0.3
+# Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Builds landing.html -- a project overview page (what GSS is,
 #              how the pipeline works, which sources are integrated) plus
@@ -104,7 +104,8 @@ def triage_overview(con):
 
 def crossmatch_overview(con):
     return fetch_one(con, """
-        SELECT COUNT(*) as n, SUM(simbad_match) as simbad, SUM(ned_match) as ned, SUM(gaia_match) as gaia
+        SELECT COUNT(*) as n, SUM(simbad_match) as simbad, SUM(ned_match) as ned, SUM(gaia_match) as gaia,
+               SUM(wise_match) as wise
         FROM crossmatches
     """)
 
@@ -149,6 +150,15 @@ def source_card(s, tiles_by_source):
     failed = tp.get("failed", 0)
     pct_resolved = tp.get("pct_resolved", 0)
 
+    note = ""
+    if s["source"] == "wise":
+        note = (
+            '<p class="subtle" style="margin:0 0 10px">Reference dataset only -- '
+            "not scored by the Isolation Forest, so candidates/triaged are always "
+            "0 by design. Reached via a local crossmatch join instead (see "
+            "Crossmatch coverage below).</p>"
+        )
+
     return f"""
     <div class="source-card">
         <div class="source-head">
@@ -158,6 +168,7 @@ def source_card(s, tiles_by_source):
         <div class="tile-bar">
             <i class="seg-complete" style="width:{100*complete/total if total else 0:.2f}%"></i><i class="seg-no-coverage" style="width:{100*no_coverage/total if total else 0:.2f}%"></i><i class="seg-pending" style="width:{100*pending/total if total else 0:.2f}%"></i><i class="seg-failed" style="width:{100*failed/total if total else 0:.2f}%"></i>
         </div>
+        {note}
         <table class="compact">
             <tr><th>Objects scanned</th><td>{s['objects']:,}</td></tr>
             <tr><th>Candidates flagged</th><td>{s['candidates']:,}</td></tr>
@@ -211,6 +222,7 @@ def make_html(db_path: str, out_path: Path) -> str:
     cross_simbad = int(cross_stats.get("simbad") or 0)
     cross_ned = int(cross_stats.get("ned") or 0)
     cross_gaia = int(cross_stats.get("gaia") or 0)
+    cross_wise = int(cross_stats.get("wise") or 0)
 
     runs_rows = "\n".join(
         f"<tr><td>{esc(r['run_id'])}</td><td>{esc(r['run_type'])}</td><td>{esc(r['status'])}</td>"
@@ -296,9 +308,9 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
 
 <h2>Introduction</h2>
 <section>
-<p>GSS scans photometric survey catalogues on a per-tile basis, computes derived features from the raw measurements, and applies an Isolation Forest to identify objects with atypical feature values relative to the observed population. Identified candidates are cross-matched against SIMBAD, NED, and Gaia, assigned a set of derived diagnostic scores, and compiled for manual review.</p>
-<p>The pipeline currently ingests two catalogues: SDSS (photometric imaging) and Gaia DR3 (astrometry and photometry). Each is stored under a distinct source label, with independent tile-scan tracking per source.</p>
-<p>SDSS and Gaia report different quantities (SDSS: ugriz photometry and morphological parameters; Gaia: G/BP/RP photometry, parallax, proper motion). The anomaly-detection model is therefore restricted to two features computable identically from either source's photometry: the magnitude difference between the bluest and reddest available band, and the largest single adjacent-band colour difference. The Isolation Forest is fit once, across all objects from all sources, using only these two features. Source-specific measurements (SDSS morphology, Gaia astrometry) are retained for diagnostic scoring but do not enter the anomaly model.</p>
+<p>GSS scans photometric survey catalogues on a per-tile basis, computes derived features from the raw measurements, and applies an Isolation Forest to identify objects with atypical feature values relative to the observed population. Identified candidates are cross-matched against SIMBAD, NED, Gaia, and WISE, assigned a set of derived diagnostic scores, and compiled for manual review.</p>
+<p>The pipeline ingests three catalogues: SDSS (photometric imaging), Gaia DR3 (astrometry and photometry), and AllWISE (infrared photometry). Each is stored under a distinct source label, with independent tile-scan tracking per source. SDSS and Gaia are scored for anomalies; AllWISE is ingested the same way but serves only as a local crossmatch reference (see Section 5).</p>
+<p>SDSS and Gaia report different quantities (SDSS: ugriz photometry and morphological parameters; Gaia: G/BP/RP photometry, parallax, proper motion). The anomaly-detection model is therefore restricted to two features computable identically from either source's photometry: the magnitude difference between the bluest and reddest available band, and the largest single adjacent-band colour difference. The Isolation Forest is fit once, across all SDSS/Gaia objects, using only these two features. Source-specific measurements (SDSS morphology, Gaia astrometry) are retained for diagnostic scoring but do not enter the anomaly model.</p>
 </section>
 
 <h2>Methodology</h2>
@@ -308,24 +320,26 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
 <p>The sky is divided into 64,800 fixed 1°×1° tiles (360 steps in RA, 180 in Dec). Tile geometry (<code>sky_tiles</code>) is source-independent; scan progress (<code>tile_scans</code>) is recorded per (tile, source) pair, so a given tile's status is tracked separately for each catalogue. Tiles are scanned in order of increasing distance from the celestial equator (<code>ORDER BY ABS(dec_min) ASC</code>), reflecting the coverage geometry of ground-based optical surveys. Each (tile, source) pair takes one of five states: <code>pending</code>, <code>running</code>, <code>complete</code> (data found), <code>no_coverage</code> (no data at this position for this source; not retried), or <code>failed</code> (a query or processing error; retried).</p>
 
 <h3>2. Per-source ingestion and quality cuts</h3>
-<p>SDSS data are queried from <code>PhotoObj</code> via the DR17 SkyServer, restricted to <code>clean=1 AND type=3</code> (galaxies), with <code>u/g/r/i/z</code> magnitudes in approximately 10–25 (r: 10–22) and positive Petrosian radii. Rows are excluded if:</p>
+<p>SDSS data are queried from <code>PhotoObj</code> via the DR17 SkyServer (Abdurro'uf et al. 2022), restricted to <code>clean=1 AND type=3</code> (galaxies), with <code>u/g/r/i/z</code> magnitudes in approximately 10–25 (r: 10–22) and positive Petrosian radii. Rows are excluded if:</p>
 <ul class="quality-cuts">
     <li>any of <code>psfMagErr_u/g/r/i/z</code> ≥ 0.5 mag,</li>
     <li><code>petroRad_r</code> or <code>petroR50_r</code> ≤ 0.2 arcsec, or</li>
     <li><code>petroR90_r</code> ≤ <code>petroR50_r</code>.</li>
 </ul>
-<p>Gaia data are queried from <code>gaiadr3.gaia_source</code> via the Gaia archive TAP service, restricted to the tile's RA/Dec bounds with non-null <code>phot_g_mean_mag</code>, <code>phot_bp_mean_mag</code>, and <code>phot_rp_mean_mag</code>. Rows are excluded if <code>phot_g_mean_mag</code> ≤ 0 or <code>parallax_error</code> ≤ 0.</p>
+<p>Gaia data are queried from <code>gaiadr3.gaia_source</code> via the Gaia archive TAP service (Gaia Collaboration, Vallenari et al. 2023), restricted to the tile's RA/Dec bounds with non-null <code>phot_g_mean_mag</code>, <code>phot_bp_mean_mag</code>, and <code>phot_rp_mean_mag</code>. Rows are excluded if <code>phot_g_mean_mag</code> ≤ 0 or <code>parallax_error</code> ≤ 0.</p>
+<p>AllWISE data (Cutri et al. 2013) are queried from <code>allwise_p3as_psd</code> via IRSA's TAP service, restricted to the tile's RA/Dec bounds with non-null W1/W2 profile-fit magnitudes. Rows are excluded if either band's magnitude uncertainty ≥ 0.5 mag or either band's contamination/confusion flag is non-zero. W3/W4 are recorded when present but not required, since AllWISE detects them far less often than W1/W2.</p>
 
 <h3>3. Anomaly detection</h3>
-<p>Before fitting, each source's values for the two shared features are normalised against that source's own median and median absolute deviation (MAD), not the pooled population's. This is necessary because sources differ in both typical scale and sample density (e.g. Gaia currently contributes several times more rows than SDSS); without per-source normalisation, whichever source has the larger scale or denser sampling would dominate the fit, and an object's anomaly score would partly reflect which catalogue it came from rather than genuine rarity within that catalogue.</p>
-<p>A single scikit-learn <code>IsolationForest</code> (<code>n_estimators=500</code>, <code>max_samples=256</code>, <code>random_state=42</code>) is then fit against the normalised values of all objects from all sources scanned to date, using the two shared features described above (<code>{esc(global_cols_str)}</code>). The model is not refit per tile and is not fit separately per source. <code>anomaly_score</code> is the output of <code>score_samples()</code>; more negative values indicate greater isolation from the combined population. <code>contamination</code> is not used, as GSS calls only <code>score_samples()</code> and not <code>predict()</code> or <code>decision_function()</code>.</p>
-<p>Source-specific measurements — SDSS morphology (concentration, surface brightness, PSF-minus-model magnitude) and Gaia astrometry (parallax, proper motion, RUWE) — are not included in this model. They are used in the diagnostic scoring described in Section 4.</p>
+<p>Before fitting, each source's values for the two shared features are normalised independently per source. For a feature value <var>x</var> with per-source median <var>m</var> and median absolute deviation <var>MAD</var>, the normalised value is (<var>x</var> − <var>m</var>) / <var>MAD</var>, falling back to the sample standard deviation when <var>MAD</var> is degenerate (≈0 — typically too few rows scanned yet for that source). Normalising against the pooled population instead of per source would let whichever source has the larger scale or denser sampling dominate the fit (Gaia currently contributes several times more rows than SDSS), so an object's anomaly score would partly reflect which catalogue it came from rather than genuine rarity within that catalogue.</p>
+<p>A single scikit-learn <code>IsolationForest</code> (Liu, Ting &amp; Zhou 2008; <code>n_estimators=500</code>, <code>max_samples=256</code> — the subsample size the original paper found sufficient for isolation to emerge independent of dataset size, <code>random_state=42</code>) is fit against the normalised values of all SDSS/Gaia objects scanned to date, using only the two shared features described above (<code>{esc(global_cols_str)}</code>), and is not fit separately per source. <code>anomaly_score</code> is the output of <code>score_samples()</code>; more negative values indicate greater isolation from the combined population. <code>contamination</code> is not used, as GSS calls only <code>score_samples()</code> and never <code>predict()</code> or <code>decision_function()</code>.</p>
+<p>The model is refit from scratch at every tile scan, against whatever population has accumulated so far — it is not cached or persisted between scans. <code>anomaly_score</code> is therefore a function of survey state at scan time, not a fixed per-object quantity: the same object would generally receive a different score if it were rescored later in the survey's history, as the reference population it's compared against grows. Candidate selection (the <code>top_n</code> most isolated objects per tile) is likewise a per-tile operation against this evolving population, not a globally maintained ranking.</p>
+<p>Source-specific measurements — SDSS morphology (concentration, surface brightness, PSF-minus-model magnitude) and Gaia astrometry (parallax, proper motion, RUWE) — are not included in this model. They are used in the diagnostic scoring described in Section 4. AllWISE photometry is never part of this model at all, for any source: see Section 5.</p>
 
 <h3>4. Evidence synthesis</h3>
-<p>Each candidate is assigned a set of derived diagnostics, flags, and a composite <code>review_score</code> (definitions version {esc(DEFINITIONS_VERSION)}, last modified {esc(DEFINITIONS_UPDATED)}). Scores are computed once and stored with the definition version that produced them, so a subsequent change to the scoring formula does not alter the record of what a candidate showed at the time of review. Diagnostics that depend on SDSS-specific morphology are omitted, rather than substituted with a default value, for sources that do not report morphology. Metric-level definitions are given on each candidate's review page.</p>
+<p>Each candidate is assigned a set of derived diagnostics, flags, and a composite <code>review_score</code> (definitions version {esc(DEFINITIONS_VERSION)}, last modified {esc(DEFINITIONS_UPDATED)}). Scores are computed once and stored with the definition version that produced them, so a subsequent change to the scoring formula does not alter the record of what a candidate showed at the time of review. Diagnostics that depend on SDSS-specific morphology are omitted, rather than substituted with a default value, for sources that do not report morphology. A candidate with a WISE crossmatch (Section 5) is additionally checked against the W1-W2 &gt; 0.8 mag colour cut (Stern et al. 2012; Assef et al. 2013) — a discriminator for AGN, dust, and cool (L/T) dwarfs rather than any one of those alone — via the <code>wise_red_excess</code> flag; no WISE match means the flag simply does not evaluate. Metric-level definitions are given on each candidate's review page.</p>
 
 <h3>5. Crossmatch</h3>
-<p>Each candidate is queried against SIMBAD and NED (30 arcsec search radius) and Gaia (10 arcsec search radius). A match does not exclude a candidate from review; it applies a fixed +0.25 penalty to the <code>artefact_risk</code> component of the review score.</p>
+<p>Each candidate is queried against SIMBAD and NED (30 arcsec search radius) and Gaia (10 arcsec search radius). WISE is matched differently: rather than a live query, each candidate is matched locally (6 arcsec, AllWISE's own angular resolution) against WISE photometry already ingested by the same per-tile scanning described in Section 2 — so a candidate only picks up a WISE match once that patch of sky has itself been WISE-scanned. A match does not exclude a candidate from review; it applies a fixed +0.25 penalty to the <code>artefact_risk</code> component of the review score.</p>
 
 <h3>Implementation notes</h3>
 <ul class="principles">
@@ -344,6 +358,15 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
     <li>Crossmatches are evidence, not exclusion criteria.</li>
     <li>Pipeline stages are modular.</li>
     <li>New surveys should require only source adapters.</li>
+</ul>
+
+<h3>References</h3>
+<ul class="principles">
+    <li>Abdurro'uf et al. 2022, ApJS, 259, 35 (SDSS DR17) — doi:10.3847/1538-4365/ac4414</li>
+    <li>Gaia Collaboration, Vallenari et al. 2023, A&amp;A, 674, A1 (Gaia DR3) — doi:10.1051/0004-6361/202243940</li>
+    <li>Cutri et al. 2013, Explanatory Supplement to the AllWISE Data Release Products</li>
+    <li>Liu, Ting &amp; Zhou 2008, ICDM, 413–422 (Isolation Forest) — doi:10.1109/ICDM.2008.17</li>
+    <li>Stern et al. 2012, ApJ, 753, 30 — doi:10.1088/0004-637X/753/1/30; Assef et al. 2013, ApJ, 772, 26 (WISE AGN colour selection)</li>
 </ul>
 </section>
 
@@ -394,6 +417,7 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
     {metric_card('SIMBAD matches', f"{cross_simbad:,}")}
     {metric_card('NED matches', f"{cross_ned:,}")}
     {metric_card('Gaia matches', f"{cross_gaia:,}")}
+    {metric_card('WISE matches', f"{cross_wise:,}")}
 </div>
 
 <h2>Recent runs</h2>

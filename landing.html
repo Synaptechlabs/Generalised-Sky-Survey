@@ -62,9 +62,9 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 
 <h2>Introduction</h2>
 <section>
-<p>GSS scans photometric survey catalogues on a per-tile basis, computes derived features from the raw measurements, and applies an Isolation Forest to identify objects with atypical feature values relative to the observed population. Identified candidates are cross-matched against SIMBAD, NED, and Gaia, assigned a set of derived diagnostic scores, and compiled for manual review.</p>
-<p>The pipeline currently ingests two catalogues: SDSS (photometric imaging) and Gaia DR3 (astrometry and photometry). Each is stored under a distinct source label, with independent tile-scan tracking per source.</p>
-<p>SDSS and Gaia report different quantities (SDSS: ugriz photometry and morphological parameters; Gaia: G/BP/RP photometry, parallax, proper motion). The anomaly-detection model is therefore restricted to two features computable identically from either source's photometry: the magnitude difference between the bluest and reddest available band, and the largest single adjacent-band colour difference. The Isolation Forest is fit once, across all objects from all sources, using only these two features. Source-specific measurements (SDSS morphology, Gaia astrometry) are retained for diagnostic scoring but do not enter the anomaly model.</p>
+<p>GSS scans photometric survey catalogues on a per-tile basis, computes derived features from the raw measurements, and applies an Isolation Forest to identify objects with atypical feature values relative to the observed population. Identified candidates are cross-matched against SIMBAD, NED, Gaia, and WISE, assigned a set of derived diagnostic scores, and compiled for manual review.</p>
+<p>The pipeline ingests three catalogues: SDSS (photometric imaging), Gaia DR3 (astrometry and photometry), and AllWISE (infrared photometry). Each is stored under a distinct source label, with independent tile-scan tracking per source. SDSS and Gaia are scored for anomalies; AllWISE is ingested the same way but serves only as a local crossmatch reference (see Section 5).</p>
+<p>SDSS and Gaia report different quantities (SDSS: ugriz photometry and morphological parameters; Gaia: G/BP/RP photometry, parallax, proper motion). The anomaly-detection model is therefore restricted to two features computable identically from either source's photometry: the magnitude difference between the bluest and reddest available band, and the largest single adjacent-band colour difference. The Isolation Forest is fit once, across all SDSS/Gaia objects, using only these two features. Source-specific measurements (SDSS morphology, Gaia astrometry) are retained for diagnostic scoring but do not enter the anomaly model.</p>
 </section>
 
 <h2>Methodology</h2>
@@ -74,24 +74,26 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 <p>The sky is divided into 64,800 fixed 1°×1° tiles (360 steps in RA, 180 in Dec). Tile geometry (<code>sky_tiles</code>) is source-independent; scan progress (<code>tile_scans</code>) is recorded per (tile, source) pair, so a given tile's status is tracked separately for each catalogue. Tiles are scanned in order of increasing distance from the celestial equator (<code>ORDER BY ABS(dec_min) ASC</code>), reflecting the coverage geometry of ground-based optical surveys. Each (tile, source) pair takes one of five states: <code>pending</code>, <code>running</code>, <code>complete</code> (data found), <code>no_coverage</code> (no data at this position for this source; not retried), or <code>failed</code> (a query or processing error; retried).</p>
 
 <h3>2. Per-source ingestion and quality cuts</h3>
-<p>SDSS data are queried from <code>PhotoObj</code> via the DR17 SkyServer, restricted to <code>clean=1 AND type=3</code> (galaxies), with <code>u/g/r/i/z</code> magnitudes in approximately 10–25 (r: 10–22) and positive Petrosian radii. Rows are excluded if:</p>
+<p>SDSS data are queried from <code>PhotoObj</code> via the DR17 SkyServer (Abdurro'uf et al. 2022), restricted to <code>clean=1 AND type=3</code> (galaxies), with <code>u/g/r/i/z</code> magnitudes in approximately 10–25 (r: 10–22) and positive Petrosian radii. Rows are excluded if:</p>
 <ul class="quality-cuts">
     <li>any of <code>psfMagErr_u/g/r/i/z</code> ≥ 0.5 mag,</li>
     <li><code>petroRad_r</code> or <code>petroR50_r</code> ≤ 0.2 arcsec, or</li>
     <li><code>petroR90_r</code> ≤ <code>petroR50_r</code>.</li>
 </ul>
-<p>Gaia data are queried from <code>gaiadr3.gaia_source</code> via the Gaia archive TAP service, restricted to the tile's RA/Dec bounds with non-null <code>phot_g_mean_mag</code>, <code>phot_bp_mean_mag</code>, and <code>phot_rp_mean_mag</code>. Rows are excluded if <code>phot_g_mean_mag</code> ≤ 0 or <code>parallax_error</code> ≤ 0.</p>
+<p>Gaia data are queried from <code>gaiadr3.gaia_source</code> via the Gaia archive TAP service (Gaia Collaboration, Vallenari et al. 2023), restricted to the tile's RA/Dec bounds with non-null <code>phot_g_mean_mag</code>, <code>phot_bp_mean_mag</code>, and <code>phot_rp_mean_mag</code>. Rows are excluded if <code>phot_g_mean_mag</code> ≤ 0 or <code>parallax_error</code> ≤ 0.</p>
+<p>AllWISE data (Cutri et al. 2013) are queried from <code>allwise_p3as_psd</code> via IRSA's TAP service, restricted to the tile's RA/Dec bounds with non-null W1/W2 profile-fit magnitudes. Rows are excluded if either band's magnitude uncertainty ≥ 0.5 mag or either band's contamination/confusion flag is non-zero. W3/W4 are recorded when present but not required, since AllWISE detects them far less often than W1/W2.</p>
 
 <h3>3. Anomaly detection</h3>
-<p>Before fitting, each source's values for the two shared features are normalised against that source's own median and median absolute deviation (MAD), not the pooled population's. This is necessary because sources differ in both typical scale and sample density (e.g. Gaia currently contributes several times more rows than SDSS); without per-source normalisation, whichever source has the larger scale or denser sampling would dominate the fit, and an object's anomaly score would partly reflect which catalogue it came from rather than genuine rarity within that catalogue.</p>
-<p>A single scikit-learn <code>IsolationForest</code> (<code>n_estimators=500</code>, <code>max_samples=256</code>, <code>random_state=42</code>) is then fit against the normalised values of all objects from all sources scanned to date, using the two shared features described above (<code>global_colour_span, global_colour_jump</code>). The model is not refit per tile and is not fit separately per source. <code>anomaly_score</code> is the output of <code>score_samples()</code>; more negative values indicate greater isolation from the combined population. <code>contamination</code> is not used, as GSS calls only <code>score_samples()</code> and not <code>predict()</code> or <code>decision_function()</code>.</p>
-<p>Source-specific measurements — SDSS morphology (concentration, surface brightness, PSF-minus-model magnitude) and Gaia astrometry (parallax, proper motion, RUWE) — are not included in this model. They are used in the diagnostic scoring described in Section 4.</p>
+<p>Before fitting, each source's values for the two shared features are normalised independently per source. For a feature value <var>x</var> with per-source median <var>m</var> and median absolute deviation <var>MAD</var>, the normalised value is (<var>x</var> − <var>m</var>) / <var>MAD</var>, falling back to the sample standard deviation when <var>MAD</var> is degenerate (≈0 — typically too few rows scanned yet for that source). Normalising against the pooled population instead of per source would let whichever source has the larger scale or denser sampling dominate the fit (Gaia currently contributes several times more rows than SDSS), so an object's anomaly score would partly reflect which catalogue it came from rather than genuine rarity within that catalogue.</p>
+<p>A single scikit-learn <code>IsolationForest</code> (Liu, Ting &amp; Zhou 2008; <code>n_estimators=500</code>, <code>max_samples=256</code> — the subsample size the original paper found sufficient for isolation to emerge independent of dataset size, <code>random_state=42</code>) is fit against the normalised values of all SDSS/Gaia objects scanned to date, using only the two shared features described above (<code>global_colour_span, global_colour_jump</code>), and is not fit separately per source. <code>anomaly_score</code> is the output of <code>score_samples()</code>; more negative values indicate greater isolation from the combined population. <code>contamination</code> is not used, as GSS calls only <code>score_samples()</code> and never <code>predict()</code> or <code>decision_function()</code>.</p>
+<p>The model is refit from scratch at every tile scan, against whatever population has accumulated so far — it is not cached or persisted between scans. <code>anomaly_score</code> is therefore a function of survey state at scan time, not a fixed per-object quantity: the same object would generally receive a different score if it were rescored later in the survey's history, as the reference population it's compared against grows. Candidate selection (the <code>top_n</code> most isolated objects per tile) is likewise a per-tile operation against this evolving population, not a globally maintained ranking.</p>
+<p>Source-specific measurements — SDSS morphology (concentration, surface brightness, PSF-minus-model magnitude) and Gaia astrometry (parallax, proper motion, RUWE) — are not included in this model. They are used in the diagnostic scoring described in Section 4. AllWISE photometry is never part of this model at all, for any source: see Section 5.</p>
 
 <h3>4. Evidence synthesis</h3>
-<p>Each candidate is assigned a set of derived diagnostics, flags, and a composite <code>review_score</code> (definitions version 0.2, last modified 2026-07-11). Scores are computed once and stored with the definition version that produced them, so a subsequent change to the scoring formula does not alter the record of what a candidate showed at the time of review. Diagnostics that depend on SDSS-specific morphology are omitted, rather than substituted with a default value, for sources that do not report morphology. Metric-level definitions are given on each candidate's review page.</p>
+<p>Each candidate is assigned a set of derived diagnostics, flags, and a composite <code>review_score</code> (definitions version 0.3, last modified 2026-07-13). Scores are computed once and stored with the definition version that produced them, so a subsequent change to the scoring formula does not alter the record of what a candidate showed at the time of review. Diagnostics that depend on SDSS-specific morphology are omitted, rather than substituted with a default value, for sources that do not report morphology. A candidate with a WISE crossmatch (Section 5) is additionally checked against the W1-W2 &gt; 0.8 mag colour cut (Stern et al. 2012; Assef et al. 2013) — a discriminator for AGN, dust, and cool (L/T) dwarfs rather than any one of those alone — via the <code>wise_red_excess</code> flag; no WISE match means the flag simply does not evaluate. Metric-level definitions are given on each candidate's review page.</p>
 
 <h3>5. Crossmatch</h3>
-<p>Each candidate is queried against SIMBAD and NED (30 arcsec search radius) and Gaia (10 arcsec search radius). A match does not exclude a candidate from review; it applies a fixed +0.25 penalty to the <code>artefact_risk</code> component of the review score.</p>
+<p>Each candidate is queried against SIMBAD and NED (30 arcsec search radius) and Gaia (10 arcsec search radius). WISE is matched differently: rather than a live query, each candidate is matched locally (6 arcsec, AllWISE's own angular resolution) against WISE photometry already ingested by the same per-tile scanning described in Section 2 — so a candidate only picks up a WISE match once that patch of sky has itself been WISE-scanned. A match does not exclude a candidate from review; it applies a fixed +0.25 penalty to the <code>artefact_risk</code> component of the review score.</p>
 
 <h3>Implementation notes</h3>
 <ul class="principles">
@@ -111,18 +113,27 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
     <li>Pipeline stages are modular.</li>
     <li>New surveys should require only source adapters.</li>
 </ul>
+
+<h3>References</h3>
+<ul class="principles">
+    <li>Abdurro'uf et al. 2022, ApJS, 259, 35 (SDSS DR17) — doi:10.3847/1538-4365/ac4414</li>
+    <li>Gaia Collaboration, Vallenari et al. 2023, A&amp;A, 674, A1 (Gaia DR3) — doi:10.1051/0004-6361/202243940</li>
+    <li>Cutri et al. 2013, Explanatory Supplement to the AllWISE Data Release Products</li>
+    <li>Liu, Ting &amp; Zhou 2008, ICDM, 413–422 (Isolation Forest) — doi:10.1109/ICDM.2008.17</li>
+    <li>Stern et al. 2012, ApJ, 753, 30 — doi:10.1088/0004-637X/753/1/30; Assef et al. 2013, ApJ, 772, 26 (WISE AGN colour selection)</li>
+</ul>
 </section>
 
 <h2>Summary</h2>
-<p class="subtle">Figures below are generated from <code>survey.db</code> (2069.6 MB, last modified 2026-07-12 18:36) at 2026-07-12 18:38.</p>
+<p class="subtle">Figures below are generated from <code>survey.db</code> (377.6 MB, last modified 2026-07-14 03:29) at 2026-07-14 03:33.</p>
 
 <div class="metrics">
-    <div class="metric"><div class="metric-value">3,420,706</div><div class="metric-label">Objects scanned</div></div>
-    <div class="metric"><div class="metric-value">1,553,222</div><div class="metric-label">Candidates flagged</div></div>
-    <div class="metric"><div class="metric-value">19,500</div><div class="metric-label">Candidates triaged</div></div>
-    <div class="metric"><div class="metric-value">18.8%</div><div class="metric-label">Tiles resolved</div></div>
-    <div class="metric"><div class="metric-value">8.85</div><div class="metric-label">Mean review score</div></div>
-    <div class="metric"><div class="metric-value">0.87</div><div class="metric-label">Mean artefact risk</div></div>
+    <div class="metric"><div class="metric-value">701,206</div><div class="metric-label">Objects scanned</div></div>
+    <div class="metric"><div class="metric-value">183,347</div><div class="metric-label">Candidates flagged</div></div>
+    <div class="metric"><div class="metric-value">4,928</div><div class="metric-label">Candidates triaged</div></div>
+    <div class="metric"><div class="metric-value">0.1%</div><div class="metric-label">Tiles resolved</div></div>
+    <div class="metric"><div class="metric-value">9.55</div><div class="metric-label">Mean review score</div></div>
+    <div class="metric"><div class="metric-value">0.75</div><div class="metric-label">Mean artefact risk</div></div>
 </div>
 
 <h2>Sky coverage</h2>
@@ -130,6 +141,7 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 <div class="skymap-grid">
     <div class="skymap-item"><img src="figures/skymap_gaia.png" alt="gaia tile coverage"></div>
 <div class="skymap-item"><img src="figures/skymap_sdss.png" alt="sdss tile coverage"></div>
+<div class="skymap-item"><img src="figures/skymap_wise.png" alt="wise tile coverage"></div>
 </div>
 
 <h2>Sources</h2>
@@ -138,18 +150,19 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
     <div class="source-card">
         <div class="source-head">
             <span class="source-badge">gaia</span>
-            <span class="source-pct">0.3% tiles resolved</span>
+            <span class="source-pct">0.0% tiles resolved</span>
         </div>
         <div class="tile-bar">
-            <i class="seg-complete" style="width:0.25%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.75%"></i><i class="seg-failed" style="width:0.00%"></i>
+            <i class="seg-complete" style="width:0.05%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.95%"></i><i class="seg-failed" style="width:0.00%"></i>
         </div>
+        
         <table class="compact">
-            <tr><th>Objects scanned</th><td>1,667,800</td></tr>
-            <tr><th>Candidates flagged</th><td>330,000</td></tr>
-            <tr><th>Candidates triaged</th><td>6,119</td></tr>
-            <tr><th>Tiles complete</th><td>163 / 64,800</td></tr>
+            <tr><th>Objects scanned</th><td>73,245</td></tr>
+            <tr><th>Candidates flagged</th><td>62,000</td></tr>
+            <tr><th>Candidates triaged</th><td>142</td></tr>
+            <tr><th>Tiles complete</th><td>31 / 64,800</td></tr>
             <tr><th>Tiles no coverage</th><td>0</td></tr>
-            <tr><th>Tiles pending</th><td>64,637</td></tr>
+            <tr><th>Tiles pending</th><td>64,769</td></tr>
             <tr><th>Tiles failed</th><td>0</td></tr>
         </table>
     </div>
@@ -158,18 +171,40 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
     <div class="source-card">
         <div class="source-head">
             <span class="source-badge">sdss</span>
-            <span class="source-pct">37.4% tiles resolved</span>
+            <span class="source-pct">0.1% tiles resolved</span>
         </div>
         <div class="tile-bar">
-            <i class="seg-complete" style="width:1.17%"></i><i class="seg-no-coverage" style="width:36.25%"></i><i class="seg-pending" style="width:62.57%"></i><i class="seg-failed" style="width:0.00%"></i>
+            <i class="seg-complete" style="width:0.10%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.90%"></i><i class="seg-failed" style="width:0.00%"></i>
         </div>
+        
         <table class="compact">
-            <tr><th>Objects scanned</th><td>1,752,906</td></tr>
-            <tr><th>Candidates flagged</th><td>1,223,222</td></tr>
-            <tr><th>Candidates triaged</th><td>13,381</td></tr>
-            <tr><th>Tiles complete</th><td>761 / 64,800</td></tr>
-            <tr><th>Tiles no coverage</th><td>23,492</td></tr>
-            <tr><th>Tiles pending</th><td>40,546</td></tr>
+            <tr><th>Objects scanned</th><td>212,159</td></tr>
+            <tr><th>Candidates flagged</th><td>121,347</td></tr>
+            <tr><th>Candidates triaged</th><td>4,786</td></tr>
+            <tr><th>Tiles complete</th><td>62 / 64,800</td></tr>
+            <tr><th>Tiles no coverage</th><td>0</td></tr>
+            <tr><th>Tiles pending</th><td>64,738</td></tr>
+            <tr><th>Tiles failed</th><td>0</td></tr>
+        </table>
+    </div>
+    
+
+    <div class="source-card">
+        <div class="source-head">
+            <span class="source-badge">wise</span>
+            <span class="source-pct">0.1% tiles resolved</span>
+        </div>
+        <div class="tile-bar">
+            <i class="seg-complete" style="width:0.06%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.94%"></i><i class="seg-failed" style="width:0.00%"></i>
+        </div>
+        <p class="subtle" style="margin:0 0 10px">Reference dataset only -- not scored by the Isolation Forest, so candidates/triaged are always 0 by design. Reached via a local crossmatch join instead (see Crossmatch coverage below).</p>
+        <table class="compact">
+            <tr><th>Objects scanned</th><td>415,802</td></tr>
+            <tr><th>Candidates flagged</th><td>0</td></tr>
+            <tr><th>Candidates triaged</th><td>0</td></tr>
+            <tr><th>Tiles complete</th><td>42 / 64,800</td></tr>
+            <tr><th>Tiles no coverage</th><td>0</td></tr>
+            <tr><th>Tiles pending</th><td>64,758</td></tr>
             <tr><th>Tiles failed</th><td>0</td></tr>
         </table>
     </div>
@@ -186,37 +221,38 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 <div class="dash-grid">
     <div>
         <h3>Triage class distribution</h3>
-        <div class="count-row"><span>mixed_anomaly</span><b>7,545</b><i style="width:38.69%"></i></div><div class="count-row"><span>extreme_colour</span><b>4,498</b><i style="width:23.07%"></i></div><div class="count-row"><span>compact_red</span><b>4,004</b><i style="width:20.53%"></i></div><div class="count-row"><span>artefact_risk</span><b>1,847</b><i style="width:9.47%"></i></div><div class="count-row"><span>probable_shred</span><b>789</b><i style="width:4.05%"></i></div><div class="count-row"><span>large_diffuse</span><b>609</b><i style="width:3.12%"></i></div><div class="count-row"><span>possible_lsb</span><b>208</b><i style="width:1.07%"></i></div>
+        <div class="count-row"><span>extreme_colour</span><b>1,600</b><i style="width:32.47%"></i></div><div class="count-row"><span>compact_red</span><b>1,436</b><i style="width:29.14%"></i></div><div class="count-row"><span>mixed_anomaly</span><b>959</b><i style="width:19.46%"></i></div><div class="count-row"><span>artefact_risk</span><b>719</b><i style="width:14.59%"></i></div><div class="count-row"><span>possible_lsb</span><b>123</b><i style="width:2.50%"></i></div><div class="count-row"><span>large_diffuse</span><b>66</b><i style="width:1.34%"></i></div><div class="count-row"><span>probable_shred</span><b>25</b><i style="width:0.51%"></i></div>
     </div>
     <div>
         <h3>Human review status</h3>
-        <div class="count-row"><span>unreviewed</span><b>1,546,695</b><i style="width:100.00%"></i></div>
+        <div class="count-row"><span>unreviewed</span><b>183,347</b><i style="width:100.00%"></i></div>
     </div>
 </div>
 
 <h2>Crossmatch coverage</h2>
 <div class="metrics">
-    <div class="metric"><div class="metric-value">1,224</div><div class="metric-label">Candidates crossmatched</div></div>
-    <div class="metric"><div class="metric-value">310</div><div class="metric-label">SIMBAD matches</div></div>
-    <div class="metric"><div class="metric-value">484</div><div class="metric-label">NED matches</div></div>
-    <div class="metric"><div class="metric-value">292</div><div class="metric-label">Gaia matches</div></div>
+    <div class="metric"><div class="metric-value">230</div><div class="metric-label">Candidates crossmatched</div></div>
+    <div class="metric"><div class="metric-value">62</div><div class="metric-label">SIMBAD matches</div></div>
+    <div class="metric"><div class="metric-value">84</div><div class="metric-label">NED matches</div></div>
+    <div class="metric"><div class="metric-value">64</div><div class="metric-label">Gaia matches</div></div>
+    <div class="metric"><div class="metric-value">15</div><div class="metric-label">WISE matches</div></div>
 </div>
 
 <h2>Recent runs</h2>
 <table>
     <tr><th>Run ID</th><th>Type</th><th>Status</th><th>Started</th><th>Finished</th></tr>
-    <tr><td>1707</td><td>scan_tile</td><td>running</td><td>2026-07-12 08:36:42</td><td>—</td></tr>
-<tr><td>1706</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:34:23</td><td>2026-07-12 08:36:34</td></tr>
-<tr><td>1705</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:32:15</td><td>2026-07-12 08:34:18</td></tr>
-<tr><td>1704</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:30:05</td><td>2026-07-12 08:32:06</td></tr>
-<tr><td>1703</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:28:03</td><td>2026-07-12 08:30:01</td></tr>
-<tr><td>1702</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:25:57</td><td>2026-07-12 08:27:55</td></tr>
-<tr><td>1701</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:23:48</td><td>2026-07-12 08:25:52</td></tr>
-<tr><td>1700</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:21:35</td><td>2026-07-12 08:23:40</td></tr>
-<tr><td>1699</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:19:32</td><td>2026-07-12 08:21:30</td></tr>
-<tr><td>1698</td><td>score_candidates</td><td>finished</td><td>2026-07-12 08:19:04</td><td>2026-07-12 08:19:24</td></tr>
-<tr><td>1697</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-12 08:16:58</td><td>2026-07-12 08:19:03</td></tr>
-<tr><td>1696</td><td>scan_tile</td><td>finished</td><td>2026-07-12 08:14:32</td><td>2026-07-12 08:16:51</td></tr>
+    <tr><td>160</td><td>crossmatch_candidates</td><td>running</td><td>2026-07-14 03:29:04</td><td>—</td></tr>
+<tr><td>159</td><td>score_candidates</td><td>finished</td><td>2026-07-14 03:29:01</td><td>2026-07-14 03:29:01</td></tr>
+<tr><td>158</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:28:45</td><td>2026-07-14 03:29:00</td></tr>
+<tr><td>157</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 03:28:31</td><td>2026-07-14 03:28:42</td></tr>
+<tr><td>156</td><td>scan_tile</td><td>finished</td><td>2026-07-14 03:28:17</td><td>2026-07-14 03:28:27</td></tr>
+<tr><td>155</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:27:54</td><td>2026-07-14 03:28:10</td></tr>
+<tr><td>154</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 03:27:39</td><td>2026-07-14 03:27:52</td></tr>
+<tr><td>153</td><td>scan_tile</td><td>finished</td><td>2026-07-14 03:27:19</td><td>2026-07-14 03:27:33</td></tr>
+<tr><td>152</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:26:56</td><td>2026-07-14 03:27:12</td></tr>
+<tr><td>151</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 03:26:40</td><td>2026-07-14 03:26:53</td></tr>
+<tr><td>150</td><td>scan_tile</td><td>finished</td><td>2026-07-14 03:26:18</td><td>2026-07-14 03:26:35</td></tr>
+<tr><td>149</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:25:47</td><td>2026-07-14 03:26:05</td></tr>
 </table>
 
 <footer>

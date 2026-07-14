@@ -1,10 +1,10 @@
 <!--
 File:        README.md
-Version:     0.2
-Date:        2026-07-13
+Version:     0.4
+Date:        2026-07-14
 Author:      Scott Douglass
-Description: Project description, pipeline overview, design notes, and
-             command reference for GSS.
+Description: Project description, pipeline overview, and command
+             reference for GSS.
 -->
 
 # GSS — Generalised Sky Survey
@@ -20,20 +20,35 @@ compiled for manual review.
 triage scores. CSVs are exports only — `export_candidates.py`'s output is
 a standalone download, not read by any other script in the pipeline.
 
+## Requirements
+
+Python 3.13+. No accounts or API keys are required: all catalogue/archive
+access (SDSS SkyServer, the Gaia archive, IRSA, SIMBAD, NED) is via public,
+unauthenticated queries, so the pipeline needs outbound internet access but
+nothing to configure beyond that.
+
 ## Current scope
 
-- Two catalogues ingested: SDSS (photometric imaging, `scan_tile.py`) and
-  Gaia DR3 (astrometry and photometry, `scan_tile_gaia.py`), each under a
-  distinct source label with independent tile-scan tracking.
-- One Isolation Forest fit globally across all sources on a shared,
+- Three catalogues ingested: SDSS DR17 (photometric imaging, `scan_tile.py`),
+  Gaia DR3 (astrometry and photometry, `scan_tile_gaia.py`), and AllWISE
+  (infrared photometry, `scan_tile_wise.py`), each under a distinct source
+  label with independent tile-scan tracking.
+- One Isolation Forest fit globally across SDSS and Gaia on a shared,
   survey-agnostic colour feature set (`global_features.py`), not siloed
   per catalogue. Each source's features are normalised against its own
   median/MAD before fitting, so no source's scale or sample density
-  dominates the pooled fit.
+  dominates the pooled fit. WISE is ingested the same way as SDSS/Gaia but
+  deliberately does not feed this shared fit (see below) -- it is not
+  itself scored for anomalies.
 - Versioned evidence synthesis (`triage.py`): derived diagnostics, flags,
   and a composite review score per candidate, recomputed only when the
-  definition version changes.
-- Crossmatch against SIMBAD, NED, and Gaia (`crossmatch_candidates.py`).
+  definition version changes. WISE photometry reaches this stage only via
+  a local crossmatch join (`crossmatch_candidates.py` against the cached
+  WISE objects), feeding a `wise_red_excess` flag (W1-W2 > 0.8 mag,
+  an AGN/dust/cool-dwarf discriminator) on SDSS/Gaia candidates that have
+  a nearby WISE match -- no match means the flag simply doesn't evaluate.
+- Crossmatch (`crossmatch_candidates.py`) against SIMBAD, NED, and Gaia via
+  live queries, plus WISE via a local lookup against already-ingested data.
 - A browsable review pack (`build_review.py`) and a project overview page
   with live pipeline statistics and per-source sky-coverage maps
   (`build_landing.py`, `build_skymap.py`).
@@ -178,17 +193,6 @@ python build_landing.py
 source into `figures/`, which `build_landing.py` embeds if present. It is
 not regenerated automatically — re-run it after further scanning to
 refresh the images.
-
-## Design note
-
-This is intentionally not an agent system.
-The immediate goal is persistent survey state:
-
-- which tiles were scanned
-- which objects were seen
-- which objects became candidates
-- which crossmatches were already done
-- what the human review status is
 
 ## License
 

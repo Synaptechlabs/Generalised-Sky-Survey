@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        run_pipeline.py
-# Version:     0.2
-# Date:        2026-07-11
+# Version:     0.3
+# Date:        2026-07-13
 # Author:      Scott Douglass
 # Description: Long-running/bounded orchestrator that loops the per-source
 #              tile scanners (scan_tile.py, scan_tile_gaia.py, ...) and
@@ -16,12 +16,19 @@ import sys
 import time
 from datetime import datetime
 
+from db import connect
+from scan_tile import ensure_tile_scans
+
 # Registry of scannable sources -> their scanner script. Add an entry here
 # when a new source's scan_tile_<source>.py is built; --sources controls
 # which of these actually run in a given invocation.
+# Note: unlike sdss/gaia, wise is ingested as a reference dataset for
+# crossmatch_candidates.py, not scored by the shared Isolation Forest --
+# see scan_tile_wise.py -- but it's still scanned every round the same way.
 SOURCE_SCANNERS = {
     "sdss": "scan_tile.py",
     "gaia": "scan_tile_gaia.py",
+    "wise": "scan_tile_wise.py",
 }
 
 def setup_logging(log_file="runner.log"):
@@ -128,6 +135,18 @@ def main():
 
     if not args.forever and args.tiles is None:
         args.tiles = 1
+
+    # Seed tile_scans for every source up front. Without this, a source with
+    # zero tile_scans rows (brand new, never scanned) and a source that has
+    # genuinely finished every tile both read as "0 pending" to
+    # count_pending_tiles below -- the round loop would then skip a new
+    # source forever, before it ever got the chance to seed its own rows
+    # (that seeding normally happens inside the scanner script itself, which
+    # never gets invoked if it looks skippable on round 1).
+    con = connect(args.db)
+    for source in sources:
+        ensure_tile_scans(con, source)
+    con.close()
 
     logger.info(f"Starting runner | db={args.db} sources={sources} forever={args.forever} rounds={args.tiles}")
     logger.info(f"Score every {args.score_every}, Crossmatch every {args.crossmatch_every}, "

@@ -1,14 +1,16 @@
 # ---------------------------------------------------------------------------
 # File:        crossmatch_candidates.py
-# Version:     0.1
-# Date:        2026-07-11
+# Version:     0.2
+# Date:        2026-07-13
 # Author:      Scott Douglass
-# Description: Cross-matches candidate objects against SIMBAD, NED, and
-#              Gaia and caches the results in survey.db.
+# Description: Cross-matches candidate objects against SIMBAD, NED, Gaia,
+#              and (locally) WISE, and caches the results in survey.db.
 # ---------------------------------------------------------------------------
 import argparse
+import math
 import time
 
+import numpy as np
 from astroquery.simbad import Simbad
 from astroquery.ipac.ned import Ned
 from astroquery.gaia import Gaia
@@ -20,6 +22,50 @@ from db import connect, init_db, start_run, finish_run
 Simbad.TIMEOUT = 30
 Ned.TIMEOUT = 30
 Gaia.TIMEOUT = 30
+
+WISE_MATCH_RADIUS_ARCSEC = 6.0  # AllWISE's own W1/W2 angular resolution
+
+
+def wise_match_for_coord(con, ra, dec, radius_arcsec=WISE_MATCH_RADIUS_ARCSEC):
+    """
+    Local match against already-ingested WISE objects/features
+    (source='wise'), unlike the live SIMBAD/NED/Gaia queries below -- WISE
+    is cached via scan_tile_wise.py's own tile scanning, so a candidate
+    only picks up a match once that patch of sky has actually been
+    WISE-scanned. 6" matches AllWISE's angular resolution, tighter than the
+    30" used for the sparser SIMBAD/NED/Gaia lookups (those catalogues are
+    far less dense, so a wider radius doesn't risk confusing neighbours the
+    way it would against WISE's much higher source density).
+    """
+    dec_delta = radius_arcsec / 3600.0
+    ra_delta = dec_delta / max(math.cos(math.radians(dec)), 1e-6)
+
+    rows = con.execute(
+        """
+        SELECT o.objID, o.ra, o.dec, f.w1_w2
+        FROM objects o
+        JOIN features f ON f.source = o.source AND f.objID = o.objID
+        WHERE o.source = 'wise'
+          AND o.ra BETWEEN ? AND ?
+          AND o.dec BETWEEN ? AND ?
+        """,
+        (ra - ra_delta, ra + ra_delta, dec - dec_delta, dec + dec_delta),
+    ).fetchall()
+
+    if not rows:
+        return None
+
+    coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+    catalog = SkyCoord(ra=np.array([r["ra"] for r in rows]) * u.deg,
+                        dec=np.array([r["dec"] for r in rows]) * u.deg)
+    seps = coord.separation(catalog).arcsec
+
+    best = int(seps.argmin())
+    if seps[best] > radius_arcsec:
+        return None
+
+    best_row = rows[best]
+    return int(best_row["objID"]), float(seps[best]), best_row["w1_w2"]
 
 def pending_candidates(con, limit):
     return con.execute(
@@ -91,11 +137,23 @@ def main():
             except Exception:
                 pass
 
+            # WISE (local match against cached objects/features -- see
+            # wise_match_for_coord above)
+            wise_match = wise_objid = wise_dist = wise_w1_w2 = ""
+            try:
+                match = wise_match_for_coord(con, row["ra"], row["dec"])
+                if match is not None:
+                    wise_match = 1
+                    wise_objid, wise_dist, wise_w1_w2 = match
+            except Exception:
+                pass
+
             # Build status string
             parts = []
             if simbad_match: parts.append("SIMBAD")
             if ned_match: parts.append("NED")
             if gaia_match: parts.append("Gaia")
+            if wise_match: parts.append("WISE")
             status = "+".join(parts) if parts else "UNCATALOGUED"
 
             print(f"{source}:{objid} -> {status}")
@@ -107,10 +165,12 @@ def main():
                     source, objID, search_radius_arcsec,
                     simbad_checked_at, simbad_match, simbad_id, simbad_otype,
                     ned_checked_at, ned_match, ned_name, ned_type,
-                    gaia_checked_at, gaia_match, gaia_source_id, gaia_dist
+                    gaia_checked_at, gaia_match, gaia_source_id, gaia_dist,
+                    wise_checked_at, wise_match, wise_objID, wise_dist, wise_w1_w2
                 )
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?,
-                        CURRENT_TIMESTAMP, ?, ?, ?)
+                        CURRENT_TIMESTAMP, ?, ?, ?,
+                        CURRENT_TIMESTAMP, ?, ?, ?, ?)
                 ON CONFLICT(source, objID) DO UPDATE SET
                     search_radius_arcsec = excluded.search_radius_arcsec,
                     simbad_checked_at = excluded.simbad_checked_at,
@@ -125,12 +185,18 @@ def main():
                     gaia_match = excluded.gaia_match,
                     gaia_source_id = excluded.gaia_source_id,
                     gaia_dist = excluded.gaia_dist,
+                    wise_checked_at = excluded.wise_checked_at,
+                    wise_match = excluded.wise_match,
+                    wise_objID = excluded.wise_objID,
+                    wise_dist = excluded.wise_dist,
+                    wise_w1_w2 = excluded.wise_w1_w2,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (source, objid, 30.0,
                  simbad_match, simbad_id, simbad_otype,
                  ned_match, ned_name, ned_type,
-                 gaia_match, gaia_source_id, gaia_dist)
+                 gaia_match, gaia_source_id, gaia_dist,
+                 wise_match, wise_objid, wise_dist, wise_w1_w2)
             )
             con.commit()
 

@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # File:        score_candidates.py
-# Version:     0.1
-# Date:        2026-07-11
+# Version:     0.2
+# Date:        2026-07-13
 # Author:      Scott Douglass
 # Description: Computes triage scores for candidates missing them (or
 #              scored under an older definition version) and stores
@@ -23,7 +23,7 @@ TRIAGE_COLS = [
     "triage_class", "triage_flags",
     "flag_extreme_colour", "flag_likely_model_issue",
     "flag_possible_lsb", "flag_compact_red", "flag_probable_shred",
-    "flag_gaia_matched", "flag_catalogued",
+    "flag_gaia_matched", "flag_catalogued", "flag_wise_red_excess",
 ]
 
 
@@ -37,7 +37,8 @@ def pending_candidates(con, limit):
             f.u_g, f.g_r, f.r_i, f.i_z,
             f.psf_minus_model_r, f.concentration_r, f.mu_r,
             f.global_colour_span, f.global_colour_jump,
-            x.simbad_id, x.ned_name, x.gaia_match, x.gaia_source_id
+            x.simbad_id, x.ned_name, x.gaia_match, x.gaia_source_id,
+            x.wise_match, x.wise_w1_w2
         FROM candidates c
         JOIN objects o ON o.source = c.source AND o.objID = c.objID
         JOIN features f ON f.source = c.source AND f.objID = c.objID

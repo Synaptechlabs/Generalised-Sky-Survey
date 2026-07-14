@@ -1,7 +1,7 @@
 <!--
 File:        quickstart.md
-Version:     0.2
-Date:        2026-07-13
+Version:     0.3
+Date:        2026-07-14
 Author:      Scott Douglass
 Description: Command-first quickstart reference for running the pipeline
              end-to-end.
@@ -47,8 +47,7 @@ next run just resumes where it left off.
 
 ## Generate a review page
 
-This is the step that replaced the old `export_candidates.py` → `filter_candidates.py`
-→ `build_review.py` chain. It's now two steps:
+Two steps: triage scoring, then rendering.
 
 ```bash
 python score_candidates.py --limit 500
@@ -85,7 +84,7 @@ Then open `landing.html` in a browser — it links to `review_pack/review.html`.
 
 ## Other useful commands
 
-Crossmatch against SIMBAD/NED/Gaia:
+Crossmatch against SIMBAD/NED/Gaia (live queries) and WISE (local lookup):
 
 ```bash
 python crossmatch_candidates.py --limit 50
@@ -99,8 +98,5 @@ python export_candidates.py --limit 500
 
 ## Common gotchas
 
-- Always generate tiles via `startup/populate.py` — a different, older tile
-  generator existed on a prior machine with a `tile_id` format that doesn't
-  match what's actually in `survey.db`, and never made it into this repo.
 - `build_review.py` will print "No triaged candidates found" if you skip
   `score_candidates.py` first.
