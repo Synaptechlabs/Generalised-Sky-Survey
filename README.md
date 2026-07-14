@@ -1,6 +1,6 @@
 <!--
 File:        README.md
-Version:     0.4
+Version:     0.5
 Date:        2026-07-14
 Author:      Scott Douglass
 Description: Project description, pipeline overview, and command
@@ -49,6 +49,14 @@ nothing to configure beyond that.
   a nearby WISE match -- no match means the flag simply doesn't evaluate.
 - Crossmatch (`crossmatch_candidates.py`) against SIMBAD, NED, and Gaia via
   live queries, plus WISE via a local lookup against already-ingested data.
+- Rank history tracking (`rank_tracking.py`): since the Isolation Forest is
+  refit from scratch at every tile scan, a candidate's `review_score`/rank
+  isn't stable over time on its own -- rank can move purely from
+  population growth. `score_candidates.py` appends a top-50-by-review_score
+  snapshot to an append-only `rank_history` table after each run that
+  scored something, and the review pack flags candidates newly entering
+  the top 50, distinguishing a genuinely new candidate from one that
+  merely climbed in as the population shifted.
 - A browsable review pack (`build_review.py`) and a project overview page
   with live pipeline statistics and per-source sky-coverage maps
   (`build_landing.py`, `build_skymap.py`).

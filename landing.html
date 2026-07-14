@@ -86,7 +86,7 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 <h3>3. Anomaly detection</h3>
 <p>Before fitting, each source's values for the two shared features are normalised independently per source. For a feature value <var>x</var> with per-source median <var>m</var> and median absolute deviation <var>MAD</var>, the normalised value is (<var>x</var> − <var>m</var>) / <var>MAD</var>, falling back to the sample standard deviation when <var>MAD</var> is degenerate (≈0 — typically too few rows scanned yet for that source). Normalising against the pooled population instead of per source would let whichever source has the larger scale or denser sampling dominate the fit (Gaia currently contributes several times more rows than SDSS), so an object's anomaly score would partly reflect which catalogue it came from rather than genuine rarity within that catalogue.</p>
 <p>A single scikit-learn <code>IsolationForest</code> (Liu, Ting &amp; Zhou 2008; <code>n_estimators=500</code>, <code>max_samples=256</code> — the subsample size the original paper found sufficient for isolation to emerge independent of dataset size, <code>random_state=42</code>) is fit against the normalised values of all SDSS/Gaia objects scanned to date, using only the two shared features described above (<code>global_colour_span, global_colour_jump</code>), and is not fit separately per source. <code>anomaly_score</code> is the output of <code>score_samples()</code>; more negative values indicate greater isolation from the combined population. <code>contamination</code> is not used, as GSS calls only <code>score_samples()</code> and never <code>predict()</code> or <code>decision_function()</code>.</p>
-<p>The model is refit from scratch at every tile scan, against whatever population has accumulated so far — it is not cached or persisted between scans. <code>anomaly_score</code> is therefore a function of survey state at scan time, not a fixed per-object quantity: the same object would generally receive a different score if it were rescored later in the survey's history, as the reference population it's compared against grows. Candidate selection (the <code>top_n</code> most isolated objects per tile) is likewise a per-tile operation against this evolving population, not a globally maintained ranking.</p>
+<p>The model is refit from scratch at every tile scan, against whatever population has accumulated so far — it is not cached or persisted between scans. <code>anomaly_score</code> is therefore a function of survey state at scan time, not a fixed per-object quantity: the same object would generally receive a different score if it were rescored later in the survey's history, as the reference population it's compared against grows. Candidate selection (the <code>top_n</code> most isolated objects per tile) is likewise a per-tile operation against this evolving population, not a globally maintained ranking. Section 6 covers how the review pack accounts for this when surfacing what's newly worth attention.</p>
 <p>Source-specific measurements — SDSS morphology (concentration, surface brightness, PSF-minus-model magnitude) and Gaia astrometry (parallax, proper motion, RUWE) — are not included in this model. They are used in the diagnostic scoring described in Section 4. AllWISE photometry is never part of this model at all, for any source: see Section 5.</p>
 
 <h3>4. Evidence synthesis</h3>
@@ -95,6 +95,9 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 <h3>5. Crossmatch</h3>
 <p>Each candidate is queried against SIMBAD and NED (30 arcsec search radius) and Gaia (10 arcsec search radius). WISE is matched differently: rather than a live query, each candidate is matched locally (6 arcsec, AllWISE's own angular resolution) against WISE photometry already ingested by the same per-tile scanning described in Section 2 — so a candidate only picks up a WISE match once that patch of sky has itself been WISE-scanned. A match does not exclude a candidate from review; it applies a fixed +0.25 penalty to the <code>artefact_risk</code> component of the review score.</p>
 
+<h3>6. Rank tracking</h3>
+<p>Because the Isolation Forest is refit at every tile scan against a growing population (Section 3), a candidate's <code>review_score</code> and rank are not stable per-object quantities — rank can move purely from population growth, independent of anything about the object itself. After every scoring run that scored at least one candidate, <code>rank_tracking.py</code> appends a snapshot of the current top 50 candidates by <code>review_score</code> to an append-only <code>rank_history</code> table, keyed to that run's own <code>runs.run_id</code> rather than a separate cycle counter. Comparing consecutive snapshots identifies candidates newly entering the top 50 — the useful signal, as opposed to ordinary re-ranking within an already-stable set — and further distinguishes a genuinely new candidate (no earlier appearance in <code>rank_history</code> at all) from one that existed in an earlier snapshot outside the top 50 and has since climbed in. Both are flagged on the review page.</p>
+
 <h3>Implementation notes</h3>
 <ul class="principles">
     <li><code>survey.db</code> holds all pipeline state. CSV output is generated only for export.</li>
@@ -102,6 +105,7 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
     <li>Metric definitions are displayed alongside their values on the review page.</li>
     <li>Pipeline runs commit incrementally and resume from the last committed state after interruption.</li>
     <li>Sources are declared in a registry (<code>SOURCE_SCANNERS</code>) rather than referenced individually in pipeline code.</li>
+    <li>Rank history is appended, never overwritten or deleted, so past top-50 snapshots stay available for comparison.</li>
 </ul>
 
 <h3>Design principles</h3>
@@ -125,15 +129,15 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 </section>
 
 <h2>Summary</h2>
-<p class="subtle">Figures below are generated from <code>survey.db</code> (377.6 MB, last modified 2026-07-14 03:29) at 2026-07-14 03:33.</p>
+<p class="subtle">Figures below are generated from <code>survey.db</code> (994.1 MB, last modified 2026-07-14 05:34) at 2026-07-14 05:35.</p>
 
 <div class="metrics">
-    <div class="metric"><div class="metric-value">701,206</div><div class="metric-label">Objects scanned</div></div>
-    <div class="metric"><div class="metric-value">183,347</div><div class="metric-label">Candidates flagged</div></div>
-    <div class="metric"><div class="metric-value">4,928</div><div class="metric-label">Candidates triaged</div></div>
-    <div class="metric"><div class="metric-value">0.1%</div><div class="metric-label">Tiles resolved</div></div>
-    <div class="metric"><div class="metric-value">9.55</div><div class="metric-label">Mean review score</div></div>
-    <div class="metric"><div class="metric-value">0.75</div><div class="metric-label">Mean artefact risk</div></div>
+    <div class="metric"><div class="metric-value">2,011,259</div><div class="metric-label">Objects scanned</div></div>
+    <div class="metric"><div class="metric-value">387,340</div><div class="metric-label">Candidates flagged</div></div>
+    <div class="metric"><div class="metric-value">10,860</div><div class="metric-label">Candidates triaged</div></div>
+    <div class="metric"><div class="metric-value">0.2%</div><div class="metric-label">Tiles resolved</div></div>
+    <div class="metric"><div class="metric-value">9.36</div><div class="metric-label">Mean review score</div></div>
+    <div class="metric"><div class="metric-value">0.61</div><div class="metric-label">Mean artefact risk</div></div>
 </div>
 
 <h2>Sky coverage</h2>
@@ -150,19 +154,19 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
     <div class="source-card">
         <div class="source-head">
             <span class="source-badge">gaia</span>
-            <span class="source-pct">0.0% tiles resolved</span>
+            <span class="source-pct">0.1% tiles resolved</span>
         </div>
         <div class="tile-bar">
-            <i class="seg-complete" style="width:0.05%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.95%"></i><i class="seg-failed" style="width:0.00%"></i>
+            <i class="seg-complete" style="width:0.15%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.85%"></i><i class="seg-failed" style="width:0.00%"></i>
         </div>
         
         <table class="compact">
-            <tr><th>Objects scanned</th><td>73,245</td></tr>
-            <tr><th>Candidates flagged</th><td>62,000</td></tr>
-            <tr><th>Candidates triaged</th><td>142</td></tr>
-            <tr><th>Tiles complete</th><td>31 / 64,800</td></tr>
+            <tr><th>Objects scanned</th><td>597,358</td></tr>
+            <tr><th>Candidates flagged</th><td>192,000</td></tr>
+            <tr><th>Candidates triaged</th><td>1,888</td></tr>
+            <tr><th>Tiles complete</th><td>96 / 64,800</td></tr>
             <tr><th>Tiles no coverage</th><td>0</td></tr>
-            <tr><th>Tiles pending</th><td>64,769</td></tr>
+            <tr><th>Tiles pending</th><td>64,704</td></tr>
             <tr><th>Tiles failed</th><td>0</td></tr>
         </table>
     </div>
@@ -171,19 +175,19 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
     <div class="source-card">
         <div class="source-head">
             <span class="source-badge">sdss</span>
-            <span class="source-pct">0.1% tiles resolved</span>
+            <span class="source-pct">0.2% tiles resolved</span>
         </div>
         <div class="tile-bar">
-            <i class="seg-complete" style="width:0.10%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.90%"></i><i class="seg-failed" style="width:0.00%"></i>
+            <i class="seg-complete" style="width:0.19%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.80%"></i><i class="seg-failed" style="width:0.00%"></i>
         </div>
         
         <table class="compact">
-            <tr><th>Objects scanned</th><td>212,159</td></tr>
-            <tr><th>Candidates flagged</th><td>121,347</td></tr>
-            <tr><th>Candidates triaged</th><td>4,786</td></tr>
-            <tr><th>Tiles complete</th><td>62 / 64,800</td></tr>
-            <tr><th>Tiles no coverage</th><td>0</td></tr>
-            <tr><th>Tiles pending</th><td>64,738</td></tr>
+            <tr><th>Objects scanned</th><td>300,500</td></tr>
+            <tr><th>Candidates flagged</th><td>195,340</td></tr>
+            <tr><th>Candidates triaged</th><td>8,972</td></tr>
+            <tr><th>Tiles complete</th><td>124 / 64,800</td></tr>
+            <tr><th>Tiles no coverage</th><td>3</td></tr>
+            <tr><th>Tiles pending</th><td>64,673</td></tr>
             <tr><th>Tiles failed</th><td>0</td></tr>
         </table>
     </div>
@@ -192,19 +196,19 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
     <div class="source-card">
         <div class="source-head">
             <span class="source-badge">wise</span>
-            <span class="source-pct">0.1% tiles resolved</span>
+            <span class="source-pct">0.2% tiles resolved</span>
         </div>
         <div class="tile-bar">
-            <i class="seg-complete" style="width:0.06%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.94%"></i><i class="seg-failed" style="width:0.00%"></i>
+            <i class="seg-complete" style="width:0.16%"></i><i class="seg-no-coverage" style="width:0.00%"></i><i class="seg-pending" style="width:99.84%"></i><i class="seg-failed" style="width:0.00%"></i>
         </div>
         <p class="subtle" style="margin:0 0 10px">Reference dataset only -- not scored by the Isolation Forest, so candidates/triaged are always 0 by design. Reached via a local crossmatch join instead (see Crossmatch coverage below).</p>
         <table class="compact">
-            <tr><th>Objects scanned</th><td>415,802</td></tr>
+            <tr><th>Objects scanned</th><td>1,113,401</td></tr>
             <tr><th>Candidates flagged</th><td>0</td></tr>
             <tr><th>Candidates triaged</th><td>0</td></tr>
-            <tr><th>Tiles complete</th><td>42 / 64,800</td></tr>
+            <tr><th>Tiles complete</th><td>102 / 64,800</td></tr>
             <tr><th>Tiles no coverage</th><td>0</td></tr>
-            <tr><th>Tiles pending</th><td>64,758</td></tr>
+            <tr><th>Tiles pending</th><td>64,697</td></tr>
             <tr><th>Tiles failed</th><td>0</td></tr>
         </table>
     </div>
@@ -221,38 +225,38 @@ code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:1
 <div class="dash-grid">
     <div>
         <h3>Triage class distribution</h3>
-        <div class="count-row"><span>extreme_colour</span><b>1,600</b><i style="width:32.47%"></i></div><div class="count-row"><span>compact_red</span><b>1,436</b><i style="width:29.14%"></i></div><div class="count-row"><span>mixed_anomaly</span><b>959</b><i style="width:19.46%"></i></div><div class="count-row"><span>artefact_risk</span><b>719</b><i style="width:14.59%"></i></div><div class="count-row"><span>possible_lsb</span><b>123</b><i style="width:2.50%"></i></div><div class="count-row"><span>large_diffuse</span><b>66</b><i style="width:1.34%"></i></div><div class="count-row"><span>probable_shred</span><b>25</b><i style="width:0.51%"></i></div>
+        <div class="count-row"><span>extreme_colour</span><b>3,692</b><i style="width:34.00%"></i></div><div class="count-row"><span>mixed_anomaly</span><b>3,200</b><i style="width:29.47%"></i></div><div class="count-row"><span>compact_red</span><b>2,574</b><i style="width:23.70%"></i></div><div class="count-row"><span>artefact_risk</span><b>1,049</b><i style="width:9.66%"></i></div><div class="count-row"><span>possible_lsb</span><b>191</b><i style="width:1.76%"></i></div><div class="count-row"><span>large_diffuse</span><b>104</b><i style="width:0.96%"></i></div><div class="count-row"><span>probable_shred</span><b>50</b><i style="width:0.46%"></i></div>
     </div>
     <div>
         <h3>Human review status</h3>
-        <div class="count-row"><span>unreviewed</span><b>183,347</b><i style="width:100.00%"></i></div>
+        <div class="count-row"><span>unreviewed</span><b>387,340</b><i style="width:100.00%"></i></div>
     </div>
 </div>
 
 <h2>Crossmatch coverage</h2>
 <div class="metrics">
-    <div class="metric"><div class="metric-value">230</div><div class="metric-label">Candidates crossmatched</div></div>
-    <div class="metric"><div class="metric-value">62</div><div class="metric-label">SIMBAD matches</div></div>
-    <div class="metric"><div class="metric-value">84</div><div class="metric-label">NED matches</div></div>
-    <div class="metric"><div class="metric-value">64</div><div class="metric-label">Gaia matches</div></div>
-    <div class="metric"><div class="metric-value">15</div><div class="metric-label">WISE matches</div></div>
+    <div class="metric"><div class="metric-value">557</div><div class="metric-label">Candidates crossmatched</div></div>
+    <div class="metric"><div class="metric-value">129</div><div class="metric-label">SIMBAD matches</div></div>
+    <div class="metric"><div class="metric-value">410</div><div class="metric-label">NED matches</div></div>
+    <div class="metric"><div class="metric-value">269</div><div class="metric-label">Gaia matches</div></div>
+    <div class="metric"><div class="metric-value">101</div><div class="metric-label">WISE matches</div></div>
 </div>
 
 <h2>Recent runs</h2>
 <table>
     <tr><th>Run ID</th><th>Type</th><th>Status</th><th>Started</th><th>Finished</th></tr>
-    <tr><td>160</td><td>crossmatch_candidates</td><td>running</td><td>2026-07-14 03:29:04</td><td>—</td></tr>
-<tr><td>159</td><td>score_candidates</td><td>finished</td><td>2026-07-14 03:29:01</td><td>2026-07-14 03:29:01</td></tr>
-<tr><td>158</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:28:45</td><td>2026-07-14 03:29:00</td></tr>
-<tr><td>157</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 03:28:31</td><td>2026-07-14 03:28:42</td></tr>
-<tr><td>156</td><td>scan_tile</td><td>finished</td><td>2026-07-14 03:28:17</td><td>2026-07-14 03:28:27</td></tr>
-<tr><td>155</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:27:54</td><td>2026-07-14 03:28:10</td></tr>
-<tr><td>154</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 03:27:39</td><td>2026-07-14 03:27:52</td></tr>
-<tr><td>153</td><td>scan_tile</td><td>finished</td><td>2026-07-14 03:27:19</td><td>2026-07-14 03:27:33</td></tr>
-<tr><td>152</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:26:56</td><td>2026-07-14 03:27:12</td></tr>
-<tr><td>151</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 03:26:40</td><td>2026-07-14 03:26:53</td></tr>
-<tr><td>150</td><td>scan_tile</td><td>finished</td><td>2026-07-14 03:26:18</td><td>2026-07-14 03:26:35</td></tr>
-<tr><td>149</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 03:25:47</td><td>2026-07-14 03:26:05</td></tr>
+    <tr><td>377</td><td>scan_tile_wise</td><td>running</td><td>2026-07-14 05:34:55</td><td>—</td></tr>
+<tr><td>376</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 05:34:10</td><td>2026-07-14 05:34:52</td></tr>
+<tr><td>375</td><td>scan_tile</td><td>finished</td><td>2026-07-14 05:33:34</td><td>2026-07-14 05:34:06</td></tr>
+<tr><td>374</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 05:33:04</td><td>2026-07-14 05:33:26</td></tr>
+<tr><td>373</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 05:32:25</td><td>2026-07-14 05:33:01</td></tr>
+<tr><td>372</td><td>scan_tile</td><td>finished</td><td>2026-07-14 05:31:52</td><td>2026-07-14 05:32:21</td></tr>
+<tr><td>371</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 05:31:31</td><td>2026-07-14 05:31:46</td></tr>
+<tr><td>370</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 05:30:49</td><td>2026-07-14 05:31:27</td></tr>
+<tr><td>369</td><td>scan_tile</td><td>finished</td><td>2026-07-14 05:30:13</td><td>2026-07-14 05:30:44</td></tr>
+<tr><td>368</td><td>scan_tile_wise</td><td>finished</td><td>2026-07-14 05:29:52</td><td>2026-07-14 05:30:05</td></tr>
+<tr><td>367</td><td>scan_tile_gaia</td><td>finished</td><td>2026-07-14 05:29:11</td><td>2026-07-14 05:29:48</td></tr>
+<tr><td>366</td><td>scan_tile</td><td>finished</td><td>2026-07-14 05:28:42</td><td>2026-07-14 05:29:08</td></tr>
 </table>
 
 <footer>

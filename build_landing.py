@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # File:        build_landing.py
-# Version:     0.3
+# Version:     0.4
 # Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Builds landing.html -- a project overview page (what GSS is,
@@ -332,7 +332,7 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
 <h3>3. Anomaly detection</h3>
 <p>Before fitting, each source's values for the two shared features are normalised independently per source. For a feature value <var>x</var> with per-source median <var>m</var> and median absolute deviation <var>MAD</var>, the normalised value is (<var>x</var> − <var>m</var>) / <var>MAD</var>, falling back to the sample standard deviation when <var>MAD</var> is degenerate (≈0 — typically too few rows scanned yet for that source). Normalising against the pooled population instead of per source would let whichever source has the larger scale or denser sampling dominate the fit (Gaia currently contributes several times more rows than SDSS), so an object's anomaly score would partly reflect which catalogue it came from rather than genuine rarity within that catalogue.</p>
 <p>A single scikit-learn <code>IsolationForest</code> (Liu, Ting &amp; Zhou 2008; <code>n_estimators=500</code>, <code>max_samples=256</code> — the subsample size the original paper found sufficient for isolation to emerge independent of dataset size, <code>random_state=42</code>) is fit against the normalised values of all SDSS/Gaia objects scanned to date, using only the two shared features described above (<code>{esc(global_cols_str)}</code>), and is not fit separately per source. <code>anomaly_score</code> is the output of <code>score_samples()</code>; more negative values indicate greater isolation from the combined population. <code>contamination</code> is not used, as GSS calls only <code>score_samples()</code> and never <code>predict()</code> or <code>decision_function()</code>.</p>
-<p>The model is refit from scratch at every tile scan, against whatever population has accumulated so far — it is not cached or persisted between scans. <code>anomaly_score</code> is therefore a function of survey state at scan time, not a fixed per-object quantity: the same object would generally receive a different score if it were rescored later in the survey's history, as the reference population it's compared against grows. Candidate selection (the <code>top_n</code> most isolated objects per tile) is likewise a per-tile operation against this evolving population, not a globally maintained ranking.</p>
+<p>The model is refit from scratch at every tile scan, against whatever population has accumulated so far — it is not cached or persisted between scans. <code>anomaly_score</code> is therefore a function of survey state at scan time, not a fixed per-object quantity: the same object would generally receive a different score if it were rescored later in the survey's history, as the reference population it's compared against grows. Candidate selection (the <code>top_n</code> most isolated objects per tile) is likewise a per-tile operation against this evolving population, not a globally maintained ranking. Section 6 covers how the review pack accounts for this when surfacing what's newly worth attention.</p>
 <p>Source-specific measurements — SDSS morphology (concentration, surface brightness, PSF-minus-model magnitude) and Gaia astrometry (parallax, proper motion, RUWE) — are not included in this model. They are used in the diagnostic scoring described in Section 4. AllWISE photometry is never part of this model at all, for any source: see Section 5.</p>
 
 <h3>4. Evidence synthesis</h3>
@@ -341,6 +341,9 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
 <h3>5. Crossmatch</h3>
 <p>Each candidate is queried against SIMBAD and NED (30 arcsec search radius) and Gaia (10 arcsec search radius). WISE is matched differently: rather than a live query, each candidate is matched locally (6 arcsec, AllWISE's own angular resolution) against WISE photometry already ingested by the same per-tile scanning described in Section 2 — so a candidate only picks up a WISE match once that patch of sky has itself been WISE-scanned. A match does not exclude a candidate from review; it applies a fixed +0.25 penalty to the <code>artefact_risk</code> component of the review score.</p>
 
+<h3>6. Rank tracking</h3>
+<p>Because the Isolation Forest is refit at every tile scan against a growing population (Section 3), a candidate's <code>review_score</code> and rank are not stable per-object quantities — rank can move purely from population growth, independent of anything about the object itself. After every scoring run that scored at least one candidate, <code>rank_tracking.py</code> appends a snapshot of the current top 50 candidates by <code>review_score</code> to an append-only <code>rank_history</code> table, keyed to that run's own <code>runs.run_id</code> rather than a separate cycle counter. Comparing consecutive snapshots identifies candidates newly entering the top 50 — the useful signal, as opposed to ordinary re-ranking within an already-stable set — and further distinguishes a genuinely new candidate (no earlier appearance in <code>rank_history</code> at all) from one that existed in an earlier snapshot outside the top 50 and has since climbed in. Both are flagged on the review page.</p>
+
 <h3>Implementation notes</h3>
 <ul class="principles">
     <li><code>survey.db</code> holds all pipeline state. CSV output is generated only for export.</li>
@@ -348,6 +351,7 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
     <li>Metric definitions are displayed alongside their values on the review page.</li>
     <li>Pipeline runs commit incrementally and resume from the last committed state after interruption.</li>
     <li>Sources are declared in a registry (<code>SOURCE_SCANNERS</code>) rather than referenced individually in pipeline code.</li>
+    <li>Rank history is appended, never overwritten or deleted, so past top-50 snapshots stay available for comparison.</li>
 </ul>
 
 <h3>Design principles</h3>

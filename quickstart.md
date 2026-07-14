@@ -1,6 +1,6 @@
 <!--
 File:        quickstart.md
-Version:     0.3
+Version:     0.4
 Date:        2026-07-14
 Author:      Scott Douglass
 Description: Command-first quickstart reference for running the pipeline
@@ -63,6 +63,10 @@ Then open `review_pack/review.html` in a browser.
 - Add `--fresh` to `build_review.py` to clear old review pack artifacts.
   This never re-downloads cached thumbnails.
 - Add `--min-review-score N` to only include candidates above a threshold.
+- `score_candidates.py` also appends a top-50-by-review_score snapshot to
+  `rank_history` whenever it scores something new; `build_review.py` uses
+  it to badge cards `new_candidate`/`climbed_top50` -- see README.md for
+  why raw rank isn't a stable signal on its own.
 
 ## Generate the landing page
 
