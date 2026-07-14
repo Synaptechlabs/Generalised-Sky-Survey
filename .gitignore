@@ -14,6 +14,8 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+build/
+dist/
 
 # Pipeline-generated data (rebuilt from survey.db, not source)
 survey.db

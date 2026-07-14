@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gss"
+version = "0.1.0"
+description = "GSS -- Generalised Sky Survey: photometric/astrometric anomaly-detection pipeline"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "Scott Douglass" }]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools]
+py-modules = [
+    "db",
+    "triage",
+    "scan_tile",
+    "scan_tile_gaia",
+    "scan_tile_wise",
+    "features",
+    "features_gaia",
+    "features_wise",
+    "global_features",
+    "crossmatch_candidates",
+    "score_candidates",
+    "build_review",
+    "build_landing",
+    "build_skymap",
+    "export_candidates",
+    "thumbnails",
+    "wise_cutouts",
+    "run_pipeline",
+]
