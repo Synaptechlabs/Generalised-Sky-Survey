@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # File:        scan_tile_wise.py
-# Version:     0.2
+# Version:     0.3
 # Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Queries AllWISE (via IRSA's TAP service) for one sky tile,
@@ -14,10 +14,13 @@
 #              still imported directly from scan_tile.py, not duplicated.
 #              coadd_id (added 2026-07-14) identifies the AllWISE coadd
 #              image tile an object was measured on, needed to fetch its
-#              FITS cutout (see wise_cutouts.py) -- objects ingested before
-#              this field was added have coadd_id=NULL and simply won't
-#              have a cutout available (see upsert_objects: raw measurement
-#              columns are only ever written once, at first-seen).
+#              FITS cutout (see wise_cutouts.py). Objects ingested before
+#              this field existed have coadd_id=NULL; upsert_objects()
+#              backfills it via COALESCE on rescan as a deliberate, narrow
+#              exception to "raw measurement columns are written once, at
+#              first-seen" -- a NULL was never a real first-seen value to
+#              begin with, so there's nothing to protect by leaving it.
+#              Every other object_cols field keeps the write-once rule.
 # ---------------------------------------------------------------------------
 import argparse
 
@@ -215,7 +218,8 @@ def upsert_objects(con, df, source, run_id, tile_id):
             )
             ON CONFLICT(source, objID) DO UPDATE SET
                 last_seen_run_id=excluded.last_seen_run_id,
-                last_seen_at=CURRENT_TIMESTAMP
+                last_seen_at=CURRENT_TIMESTAMP,
+                coadd_id=COALESCE(objects.coadd_id, excluded.coadd_id)
             """,
             {**vals, "source": source, "run_id": run_id},
         )
