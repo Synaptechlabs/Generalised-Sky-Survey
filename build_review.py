@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # File:        build_review.py
-# Version:     0.3
+# Version:     0.4
 # Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Builds the review_pack/review.html candidate review page
@@ -20,6 +20,7 @@ import pandas as pd
 from thumbnails import get_thumbnail, skyserver_url, sdss_stamp_url
 from triage import METRIC_DEFINITIONS, DEFINITIONS_VERSION, DEFINITIONS_UPDATED
 from wise_cutouts import get_wise_cutouts, wise_viewer_url
+from rank_tracking import latest_cycle, new_entrants
 
 DEFAULT_DB = "survey.db"
 DEFAULT_REVIEW_DIR = Path("review_pack")
@@ -111,6 +112,21 @@ def pill_list(value):
         return ""
     parts = [p.strip() for p in str(value).replace(",", ";").split(";") if p.strip() and p.strip() != "none"]
     return "".join(f'<span class="pill">{esc(p)}</span>' for p in parts)
+
+
+def entrant_badge(candidate_id, entrants):
+    """
+    entrants is {candidate_id: is_new_candidate} from rank_tracking.
+    new_entrants() for the latest recorded scan_cycle -- not a triage flag
+    (not versioned/stored in the triage table), computed fresh at build
+    time. Not in entrants at all means "not a new top-N entrant this
+    cycle", same as any other candidate re-ranking within an already-
+    stable set.
+    """
+    if candidate_id not in entrants:
+        return ""
+    label = "new_candidate" if entrants[candidate_id] else "climbed_top50"
+    return f'<span class="pill pill-entrant">{esc(label)}</span>'
 
 
 def crossmatch_summary(row):
@@ -268,11 +284,12 @@ def definitions_card() -> str:
     """
 
 
-def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumbnails: bool) -> str:
+def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumbnails: bool, entrants: dict) -> str:
     source = row.get("source", "")
     objid = int(row.get("objID"))
     ra, dec = row.get("ra"), row.get("dec")
     triage = row.get("triage_class", "untriaged")
+    candidate_id = int(row.get("candidate_id"))
 
     thumb_path = get_thumbnail(thumb_dir, source, objid, ra, dec, download_missing=download_thumbnails)
     thumb = Path(thumb_path).relative_to(review_dir).as_posix() if thumb_path else ""
@@ -311,7 +328,7 @@ def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumb
 <div class="risk-line">
     Measurement risk: <b>{fmt(row.get('artefact_risk'), 2)}</b>
 </div>
-<div class="pill-row">{pill_list(row.get('triage_flags'))}</div>
+<div class="pill-row">{pill_list(row.get('triage_flags'))}{entrant_badge(candidate_id, entrants)}</div>
                     <table class="compact">
                         <tr><th>Weirdness</th><td>{fmt(row.get('weirdness_score'), 3)}</td><th>Artefact risk</th><td>{fmt(row.get('artefact_risk'), 3)}</td></tr>
                         <tr><th>Anomaly score</th><td>{fmt(row.get('anomaly_score'), 6)}</td><th>Rank</th><td>{fmt(row.get('rank_in_run'), 0)}</td></tr>
@@ -413,11 +430,11 @@ def make_dashboard(df: pd.DataFrame) -> str:
 
 
 def make_html(df: pd.DataFrame, db_path: str, thumb_dir: Path, review_dir: Path,
-              download_thumbnails: bool, max_cards: int | None = None) -> str:
+              download_thumbnails: bool, entrants: dict, max_cards: int | None = None) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     shown = df if max_cards is None else df.head(max_cards)
     cards = "\n".join(
-        make_card(row, i, thumb_dir, review_dir, download_thumbnails)
+        make_card(row, i, thumb_dir, review_dir, download_thumbnails, entrants)
         for i, (_, row) in enumerate(shown.iterrows(), start=1)
     )
     return f"""<!doctype html>
@@ -483,6 +500,7 @@ a {{ color:var(--link); text-decoration:none; }} a:hover {{ text-decoration:unde
 .data-panel section {{ margin-bottom:12px; }}
 .pill-row {{ display:flex; gap:7px; flex-wrap:wrap; margin:8px 0 10px; }}
 .pill {{ background:#30384c; border:1px solid #46506a; border-radius:999px; padding:4px 9px; font-size:13px; }}
+.pill-entrant {{ background:#4a3d10; border-color:var(--accent); color:var(--accent); }}
 .class-line {{ font-size:18px; margin-bottom:6px; }}
 table {{ width:100%; border-collapse:collapse; font-size:14px; }}
 th {{ text-align:left; color:var(--muted); font-weight:normal; padding:6px 8px 6px 0; }}
@@ -536,9 +554,16 @@ def build_review(
     if df.empty:
         print("No triaged candidates found. Run score_candidates.py first.")
 
+    con = connect(db_path)
+    try:
+        cycle = latest_cycle(con)
+        entrants = new_entrants(con, cycle) if cycle is not None else {}
+    finally:
+        con.close()
+
     output_html.parent.mkdir(parents=True, exist_ok=True)
     html_text = make_html(df, db_path=db_path, thumb_dir=thumb_dir, review_dir=review_dir,
-                           download_thumbnails=download_thumbnails, max_cards=max_cards)
+                           download_thumbnails=download_thumbnails, entrants=entrants, max_cards=max_cards)
     output_html.write_text(html_text, encoding="utf-8")
     return df
 

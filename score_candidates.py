@@ -1,16 +1,19 @@
 # ---------------------------------------------------------------------------
 # File:        score_candidates.py
-# Version:     0.2
-# Date:        2026-07-13
+# Version:     0.3
+# Date:        2026-07-14
 # Author:      Scott Douglass
 # Description: Computes triage scores for candidates missing them (or
 #              scored under an older definition version) and stores
-#              results in survey.db's triage table.
+#              results in survey.db's triage table. Also appends a
+#              rank_history snapshot (rank_tracking.py) after each run
+#              that actually scored something.
 # ---------------------------------------------------------------------------
 import argparse
 
 from db import connect, init_db, start_run, finish_run
 from triage import add_candidate_triage, DEFINITIONS_VERSION
+from rank_tracking import record_rank_history
 
 TRIAGE_COLS = [
     "colour_span", "red_score", "full_red_score",
@@ -93,6 +96,15 @@ def main():
             upsert_triage(con, data["candidate_id"], triage)
 
         con.commit()
+
+        # Only worth a new rank_history snapshot if something in triage
+        # actually changed this run -- review_score for existing candidates
+        # never changes outside of a rescore, so an empty `rows` means the
+        # top-N is provably identical to the last recorded cycle.
+        if rows:
+            record_rank_history(con, run_id)
+            con.commit()
+
         finish_run(con, run_id, "finished", f"Scored {len(rows)} candidates.")
         print(f"Done. Scored {len(rows)} candidates.")
 

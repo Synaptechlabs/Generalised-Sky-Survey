@@ -1,6 +1,6 @@
 -- ---------------------------------------------------------------------------
 -- File:        schema.sql
--- Version:     0.3
+-- Version:     0.4
 -- Date:        2026-07-14
 -- Author:      Scott Douglass
 -- Description: SQLite schema for survey.db -- tiles, objects, features,
@@ -256,8 +256,31 @@ CREATE TABLE IF NOT EXISTS triage (
     FOREIGN KEY(candidate_id) REFERENCES candidates(candidate_id)
 );
 
+-- Append-only top-N-by-review_score snapshots, one set of rows per
+-- scoring cycle (see rank_tracking.py). Exists because the Isolation
+-- Forest refits from scratch every tile scan against a growing population
+-- (scan_tile.py), so review_score/rank for a given candidate is not a
+-- stable quantity over time -- a candidate's rank can move purely from
+-- population growth, not from anything about the object itself. This
+-- table lets rank_tracking.py tell "newly entered the top N" (the useful
+-- signal) apart from ordinary re-ranking within an already-stable set.
+-- scan_cycle is runs.run_id of the score_candidates.py invocation that
+-- wrote the snapshot -- there is no separate cycle counter (run_pipeline.py
+-- has no persisted one; its in-memory round counter resets on restart).
+-- Rows are never updated or deleted, only appended.
+CREATE TABLE IF NOT EXISTS rank_history (
+    candidate_id INTEGER NOT NULL,
+    scan_cycle INTEGER NOT NULL,
+    rank_in_cycle INTEGER NOT NULL,
+    review_score REAL NOT NULL,
+    recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(candidate_id, scan_cycle),
+    FOREIGN KEY(candidate_id) REFERENCES candidates(candidate_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_objects_ra_dec ON objects(ra, dec);
 CREATE INDEX IF NOT EXISTS idx_candidates_run ON candidates(run_id, anomaly_score);
 CREATE INDEX IF NOT EXISTS idx_candidates_obj ON candidates(source, objID);
 CREATE INDEX IF NOT EXISTS idx_tile_scans_status ON tile_scans(source, status);
 CREATE INDEX IF NOT EXISTS idx_triage_review_score ON triage(review_score);
+CREATE INDEX IF NOT EXISTS idx_rank_history_cycle ON rank_history(scan_cycle);
