@@ -375,7 +375,7 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
 </section>
 
 <h2>Summary</h2>
-<p class="subtle">Figures below are generated from <code>{esc(db_path)}</code> ({db_stats['size_mb']:.1f} MB, last modified {esc(db_stats['mtime'])}) at {esc(timestamp)}.</p>
+<p class="subtle">Figures below are generated from the pipeline database ({db_stats['size_mb']:.1f} MB, last modified {esc(db_stats['mtime'])}) at {esc(timestamp)}.</p>
 
 <div class="metrics">
     {metric_card('Objects scanned', f"{total_objects:,}")}

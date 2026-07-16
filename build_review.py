@@ -525,7 +525,7 @@ td {{ padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Conso
 </head>
 <body>
 <h1>Candidate Review Pack</h1>
-<p class="subtle">Generated {esc(timestamp)} from {esc(db_path)} — {len(df)} candidates sorted by review_score.</p>
+<p class="subtle">Generated {esc(timestamp)} from the pipeline database — {len(df)} candidates sorted by review_score.</p>
 {make_dashboard(df)}
 {cards}
 </body>
