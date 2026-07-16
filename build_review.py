@@ -115,18 +115,24 @@ def pill_list(value):
     return "".join(f'<span class="pill">{esc(p)}</span>' for p in parts)
 
 
-def entrant_badge(candidate_id, entrants):
+def entrant_label(candidate_id, entrants) -> str:
     """
     entrants is {candidate_id: is_new_candidate} from rank_tracking.
     new_entrants() for the latest recorded scan_cycle -- not a triage flag
     (not versioned/stored in the triage table), computed fresh at build
     time. Not in entrants at all means "not a new top-N entrant this
     cycle", same as any other candidate re-ranking within an already-
-    stable set.
+    stable set. Returns "" in that case.
     """
     if candidate_id not in entrants:
         return ""
-    label = "new_candidate" if entrants[candidate_id] else "climbed_top50"
+    return "new_candidate" if entrants[candidate_id] else "climbed_top50"
+
+
+def entrant_badge(candidate_id, entrants):
+    label = entrant_label(candidate_id, entrants)
+    if not label:
+        return ""
     return f'<span class="pill pill-entrant">{esc(label)}</span>'
 
 
@@ -305,8 +311,11 @@ def make_card(row, index: int, thumb_dir: Path, review_dir: Path, download_thumb
     thumb = Path(thumb_path).relative_to(review_dir).as_posix() if thumb_path else ""
     img_html = f'<img class="thumb" src="{esc(thumb)}" alt="SDSS thumbnail">' if thumb else '<div class="missing-thumb">No cached image</div>'
 
+    search_blob = f"{source}:{objid} {row.get('tile_id') or ''}".lower()
+    entrant = entrant_label(candidate_id, entrants)
+
     return f"""
-    <article class="card class-{esc(triage)}">
+    <article class="card class-{esc(triage)}" data-class="{esc(triage)}" data-search="{esc(search_blob)}" data-entrant="{esc(entrant)}">
         <div class="card-header">
             <div>
                 <h2>#{index:03d} — {esc(source)}:{objid}</h2>
@@ -447,6 +456,10 @@ def make_html(df: pd.DataFrame, db_path: str, thumb_dir: Path, review_dir: Path,
         make_card(row, i, thumb_dir, review_dir, download_thumbnails, entrants, con)
         for i, (_, row) in enumerate(shown.iterrows(), start=1)
     )
+    classes = sorted(shown["triage_class"].dropna().unique()) if "triage_class" in shown.columns and len(shown) else []
+    class_buttons = "".join(
+        f'<button class="filter-btn" data-filter="{esc(c)}">{esc(c)}</button>' for c in classes
+    )
     return f"""<!doctype html>
 <html>
 <head>
@@ -512,6 +525,16 @@ a {{ color:var(--link); text-decoration:none; }} a:hover {{ text-decoration:unde
 .pill {{ background:#30384c; border:1px solid #46506a; border-radius:999px; padding:4px 9px; font-size:13px; }}
 .pill-entrant {{ background:#4a3d10; border-color:var(--accent); color:var(--accent); }}
 .class-line {{ font-size:18px; margin-bottom:6px; }}
+.filter-bar {{ display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin:0 0 22px; }}
+#search {{ background:var(--panel); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 12px; font-size:14px; min-width:240px; }}
+.filter-group {{ display:flex; gap:8px; flex-wrap:wrap; }}
+.filter-btn {{ background:var(--panel); border:1px solid var(--line); color:var(--muted); border-radius:999px; padding:6px 14px; font-size:13px; cursor:pointer; }}
+.filter-btn.active {{ background:var(--accent); border-color:var(--accent); color:#171a22; }}
+.filter-count {{ color:var(--muted); font-size:13px; }}
+.pager {{ display:flex; gap:10px; align-items:center; justify-content:center; margin:26px 0; }}
+.pager button {{ background:var(--panel); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 16px; font-size:14px; cursor:pointer; }}
+.pager button:disabled {{ color:var(--muted); cursor:default; opacity:.5; }}
+.pager-info {{ color:var(--muted); font-size:13px; }}
 table {{ width:100%; border-collapse:collapse; font-size:14px; }}
 th {{ text-align:left; color:var(--muted); font-weight:normal; padding:6px 8px 6px 0; }}
 td {{ padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Consolas, monospace; }}
@@ -527,7 +550,107 @@ td {{ padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Conso
 <h1>Candidate Review Pack</h1>
 <p class="subtle">Generated {esc(timestamp)} from the pipeline database — {len(df)} candidates sorted by review_score.</p>
 {make_dashboard(df)}
+
+<div class="filter-bar">
+    <input type="text" id="search" placeholder="Search source:objID or tile...">
+    <div class="filter-group" id="classFilters">
+        <button class="filter-btn active" data-filter="all">All classes</button>
+        {class_buttons}
+    </div>
+    <button class="filter-btn" id="entrantToggle">New/climbed only</button>
+    <span class="filter-count" id="filterCount"></span>
+</div>
+
+<div class="pager" id="pagerTop"></div>
+<div id="cardContainer">
 {cards}
+</div>
+<div class="pager" id="pagerBottom"></div>
+
+<script>
+(function () {{
+    var PAGE_SIZE = 50;
+    var cards = Array.prototype.slice.call(document.querySelectorAll('#cardContainer .card'));
+    var search = document.getElementById('search');
+    var classButtons = Array.prototype.slice.call(document.querySelectorAll('#classFilters .filter-btn'));
+    var entrantToggle = document.getElementById('entrantToggle');
+    var filterCount = document.getElementById('filterCount');
+    var pagerTop = document.getElementById('pagerTop');
+    var pagerBottom = document.getElementById('pagerBottom');
+
+    var state = {{ activeClass: 'all', entrantOnly: false, page: 1 }};
+
+    function matches(card) {{
+        var classOk = state.activeClass === 'all' || card.dataset.class === state.activeClass;
+        var q = search.value.trim().toLowerCase();
+        var searchOk = !q || card.dataset.search.indexOf(q) !== -1;
+        var entrantOk = !state.entrantOnly || !!card.dataset.entrant;
+        return classOk && searchOk && entrantOk;
+    }}
+
+    function renderPager(container, totalPages) {{
+        container.innerHTML = '';
+        if (totalPages <= 1) return;
+        var prev = document.createElement('button');
+        prev.textContent = '← Prev';
+        prev.disabled = state.page <= 1;
+        prev.onclick = function () {{ state.page -= 1; render(); window.scrollTo(0, 0); }};
+        var info = document.createElement('span');
+        info.className = 'pager-info';
+        info.textContent = 'Page ' + state.page + ' of ' + totalPages;
+        var next = document.createElement('button');
+        next.textContent = 'Next →';
+        next.disabled = state.page >= totalPages;
+        next.onclick = function () {{ state.page += 1; render(); window.scrollTo(0, 0); }};
+        container.appendChild(prev);
+        container.appendChild(info);
+        container.appendChild(next);
+    }}
+
+    function render() {{
+        var filtered = cards.filter(matches);
+        var totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+        if (state.page > totalPages) state.page = totalPages;
+        if (state.page < 1) state.page = 1;
+
+        var start = (state.page - 1) * PAGE_SIZE;
+        var end = start + PAGE_SIZE;
+        var visible = filtered.slice(start, end);
+        var visibleSet = new Set(visible);
+
+        cards.forEach(function (c) {{ c.style.display = visibleSet.has(c) ? '' : 'none'; }});
+
+        filterCount.textContent = filtered.length
+            ? 'Showing ' + (start + 1) + '-' + Math.min(end, filtered.length) + ' of ' + filtered.length
+                + ' (' + cards.length + ' total)'
+            : '0 candidates match (' + cards.length + ' total)';
+
+        renderPager(pagerTop, totalPages);
+        renderPager(pagerBottom, totalPages);
+    }}
+
+    classButtons.forEach(function (b) {{
+        b.addEventListener('click', function () {{
+            classButtons.forEach(function (x) {{ x.classList.remove('active'); }});
+            b.classList.add('active');
+            state.activeClass = b.dataset.filter;
+            state.page = 1;
+            render();
+        }});
+    }});
+
+    entrantToggle.addEventListener('click', function () {{
+        state.entrantOnly = !state.entrantOnly;
+        entrantToggle.classList.toggle('active', state.entrantOnly);
+        state.page = 1;
+        render();
+    }});
+
+    search.addEventListener('input', function () {{ state.page = 1; render(); }});
+
+    render();
+}})();
+</script>
 </body>
 </html>"""
 
