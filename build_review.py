@@ -525,7 +525,7 @@ a {{ color:var(--link); text-decoration:none; }} a:hover {{ text-decoration:unde
 .pill {{ background:#30384c; border:1px solid #46506a; border-radius:999px; padding:4px 9px; font-size:13px; }}
 .pill-entrant {{ background:#4a3d10; border-color:var(--accent); color:var(--accent); }}
 .class-line {{ font-size:18px; margin-bottom:6px; }}
-.filter-bar {{ display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin:0 0 22px; }}
+.filter-bar {{ display:flex; gap:14px; flex-wrap:wrap; align-items:center; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:0 0 22px; }}
 #search {{ background:var(--panel); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 12px; font-size:14px; min-width:240px; }}
 .filter-group {{ display:flex; gap:8px; flex-wrap:wrap; }}
 .filter-btn {{ background:var(--panel); border:1px solid var(--line); color:var(--muted); border-radius:999px; padding:6px 14px; font-size:13px; cursor:pointer; }}
