@@ -1,13 +1,15 @@
 # ---------------------------------------------------------------------------
 # File:        build_landing.py
-# Version:     0.4
-# Date:        2026-07-14
+# Version:     0.5
+# Date:        2026-07-18
 # Author:      Scott Douglass
-# Description: Builds landing.html -- a project overview page (what GSS is,
-#              how the pipeline works, which sources are integrated) plus
-#              a live stats dashboard pulled directly from survey.db. Same
-#              visual theme as build_review.py, but a fully separate,
-#              self-contained script -- no shared module between the two.
+# Description: Builds landing.html -- a live stats dashboard pulled
+#              directly from survey.db -- plus about.html, a static page
+#              covering what GSS is and how the pipeline works (moved out
+#              of landing.html so the dashboard page stays focused on
+#              current state). Same visual theme as build_review.py, but a
+#              fully separate, self-contained script -- no shared module
+#              between the two.
 # ---------------------------------------------------------------------------
 import argparse
 import html
@@ -21,6 +23,57 @@ from triage import DEFINITIONS_VERSION, DEFINITIONS_UPDATED
 DEFAULT_DB = "survey.db"
 DEFAULT_OUTPUT = Path("landing.html")
 TOTAL_SKY_TILES = 64800
+
+THEME_CSS = """
+:root {
+    --bg:#0f1117; --panel:#171a22; --panel2:#202532; --panel3:#11141c;
+    --text:#e7eaf0; --muted:#a9b0c2; --line:#343b4d; --link:#8fc7ff;
+    --accent:#ffd447; --bad:#ff6b6b; --good:#70c1b3;
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:28px; font-family:Arial, Helvetica, sans-serif; background:var(--bg); color:var(--text); max-width:1200px; margin-left:auto; margin-right:auto; }
+h1 { margin:0; font-size:26px; font-weight:normal; }
+h2 { margin:36px 0 14px; font-size:20px; font-weight:normal; border-bottom:1px solid var(--line); padding-bottom:8px; }
+h3 { margin:0 0 10px 0; font-size:15px; font-weight:normal; border-bottom:1px solid var(--line); padding-bottom:6px; }
+a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+.subtitle { color:var(--muted); margin:8px 0 4px; font-size:14px; }
+.subtle { color:var(--muted); margin:7px 0 22px; }
+.hero { padding-bottom:14px; border-bottom:1px solid var(--line); margin-bottom:8px; }
+.hero .links { display:flex; gap:18px; flex-wrap:wrap; }
+ul.principles { margin:0; padding-left:20px; line-height:1.7; color:var(--muted); }
+.metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
+.metric { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+.metric-value { font-size:26px; font-weight:bold; } .metric-label { color:var(--muted); font-size:13px; margin-top:4px; }
+.dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.dash-grid > div, section { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:12px; }
+.count-row { position:relative; display:grid; grid-template-columns:1fr auto; gap:10px; padding:7px 0; border-bottom:1px solid #2d3445; overflow:hidden; }
+.count-row i { position:absolute; left:0; bottom:0; height:2px; background:#56617d; }
+.source-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+.skymap-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:16px; margin-bottom:20px; }
+.skymap-item img { width:100%; height:auto; border:1px solid var(--line); border-radius:8px; display:block; }
+.source-card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+.source-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.source-badge { font-weight:bold; font-size:14px; }
+.source-pct { color:var(--muted); font-size:13px; }
+.tile-bar { height:10px; border-radius:999px; overflow:hidden; display:flex; background:var(--panel3); border:1px solid var(--line); margin-bottom:12px; }
+.tile-bar i { display:block; height:100%; }
+.seg-complete { background:var(--good); }
+.seg-no-coverage { background:#56617d; }
+.seg-pending { background:#3a4257; }
+.seg-failed { background:var(--bad); }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin:8px 0 20px; }
+.legend span { display:inline-flex; align-items:center; gap:5px; }
+.legend i { width:10px; height:10px; border-radius:3px; display:inline-block; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th { text-align:left; color:var(--muted); font-weight:normal; padding:6px 8px 6px 0; }
+td { padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Consolas, monospace; }
+.compact th { width:55%; }
+footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+p { line-height:1.6; }
+code { background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:13px; }
+.quality-cuts { margin:10px 0 0; padding-left:20px; line-height:1.7; color:var(--muted); font-size:14px; }
+@media (max-width:900px) { .dash-grid { grid-template-columns:1fr; } }
+"""
 
 
 def esc(x) -> str:
@@ -182,128 +235,30 @@ def source_card(s, tiles_by_source):
     """
 
 
-def make_html(db_path: str, out_path: Path) -> str:
-    con = connect(db_path)
-    try:
-        sources = source_summary(con)
-        tiles = tile_progress(con)
-        tiles_by_source = {t["source"]: t for t in tiles}
-        triage_dist = triage_class_distribution(con)
-        triage_stats = triage_overview(con)
-        cross_stats = crossmatch_overview(con)
-        review_stats = review_status_summary(con)
-        runs = recent_runs(con)
-        db_stats = db_file_stats(db_path)
-
-        total_objects = sum(s["objects"] for s in sources)
-        total_candidates = sum(s["candidates"] for s in sources)
-        total_triaged = sum(s["triaged"] for s in sources)
-        total_tile_slots = sum(t["total"] for t in tiles) or 1
-        total_resolved = sum(t["complete"] + t["no_coverage"] for t in tiles)
-        overall_pct = 100 * total_resolved / total_tile_slots
-    finally:
-        con.close()
-
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    source_cards_html = "\n".join(source_card(s, tiles_by_source) for s in sources) or "<p class='subtle'>No sources scanned yet.</p>"
-
-    triage_dist_html = ""
-    triage_total = sum(r["n"] for r in triage_dist) or 1
-    for r in triage_dist:
-        triage_dist_html += count_bar_row(r["triage_class"], r["n"], triage_total)
-
-    review_html = ""
-    review_total = sum(r["n"] for r in review_stats) or 1
-    for r in review_stats:
-        review_html += count_bar_row(r["status"], r["n"], review_total)
-
-    cross_n = int(cross_stats.get("n") or 0)
-    cross_simbad = int(cross_stats.get("simbad") or 0)
-    cross_ned = int(cross_stats.get("ned") or 0)
-    cross_gaia = int(cross_stats.get("gaia") or 0)
-    cross_wise = int(cross_stats.get("wise") or 0)
-
-    runs_rows = "\n".join(
-        f"<tr><td>{esc(r['run_id'])}</td><td>{esc(r['run_type'])}</td><td>{esc(r['status'])}</td>"
-        f"<td>{esc(r['started_at'])}</td><td>{esc(r['finished_at'] or '—')}</td></tr>"
-        for r in runs
-    ) or "<tr><td colspan='5' class='subtle'>No runs yet.</td></tr>"
-
-    avg_review = triage_stats.get("avg_review")
-    avg_risk = triage_stats.get("avg_risk")
-
+def make_about_html() -> str:
+    """
+    Static -- no survey.db read. What GSS is and how the pipeline works,
+    split out of make_html() (2026-07-18) so the dashboard page stays
+    focused on current state and this explanatory content isn't rebuilt
+    (and re-diffed) on every run for no reason.
+    """
     global_cols_str = ", ".join(GLOBAL_FEATURE_COLS)
-
-    skymap_items = []
-    for s in sources:
-        img_path = Path("figures") / f"skymap_{s['source']}.png"
-        if img_path.exists():
-            skymap_items.append(
-                f'<div class="skymap-item"><img src="{esc(img_path.as_posix())}" alt="{esc(s["source"])} tile coverage"></div>'
-            )
-    skymap_html = "\n".join(skymap_items) or "<p class='subtle'>No skymaps generated yet -- run build_skymap.py.</p>"
 
     return f"""<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>GSS — Generalised Sky Survey</title>
-<style>
-:root {{
-    --bg:#0f1117; --panel:#171a22; --panel2:#202532; --panel3:#11141c;
-    --text:#e7eaf0; --muted:#a9b0c2; --line:#343b4d; --link:#8fc7ff;
-    --accent:#ffd447; --bad:#ff6b6b; --good:#70c1b3;
-}}
-* {{ box-sizing:border-box; }}
-body {{ margin:0; padding:28px; font-family:Arial, Helvetica, sans-serif; background:var(--bg); color:var(--text); max-width:1200px; margin-left:auto; margin-right:auto; }}
-h1 {{ margin:0; font-size:26px; font-weight:normal; }}
-h2 {{ margin:36px 0 14px; font-size:20px; font-weight:normal; border-bottom:1px solid var(--line); padding-bottom:8px; }}
-h3 {{ margin:0 0 10px 0; font-size:15px; font-weight:normal; border-bottom:1px solid var(--line); padding-bottom:6px; }}
-a {{ color:var(--link); text-decoration:none; }} a:hover {{ text-decoration:underline; }}
-.subtitle {{ color:var(--muted); margin:8px 0 4px; font-size:14px; }}
-.subtle {{ color:var(--muted); margin:7px 0 22px; }}
-.hero {{ padding-bottom:14px; border-bottom:1px solid var(--line); margin-bottom:8px; }}
-ul.principles {{ margin:0; padding-left:20px; line-height:1.7; color:var(--muted); }}
-.metrics {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }}
-.metric {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }}
-.metric-value {{ font-size:26px; font-weight:bold; }} .metric-label {{ color:var(--muted); font-size:13px; margin-top:4px; }}
-.dash-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
-.dash-grid > div, section {{ background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:12px; }}
-.count-row {{ position:relative; display:grid; grid-template-columns:1fr auto; gap:10px; padding:7px 0; border-bottom:1px solid #2d3445; overflow:hidden; }}
-.count-row i {{ position:absolute; left:0; bottom:0; height:2px; background:#56617d; }}
-.source-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }}
-.skymap-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:16px; margin-bottom:20px; }}
-.skymap-item img {{ width:100%; height:auto; border:1px solid var(--line); border-radius:8px; display:block; }}
-.source-card {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }}
-.source-head {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }}
-.source-badge {{ font-weight:bold; font-size:14px; }}
-.source-pct {{ color:var(--muted); font-size:13px; }}
-.tile-bar {{ height:10px; border-radius:999px; overflow:hidden; display:flex; background:var(--panel3); border:1px solid var(--line); margin-bottom:12px; }}
-.tile-bar i {{ display:block; height:100%; }}
-.seg-complete {{ background:var(--good); }}
-.seg-no-coverage {{ background:#56617d; }}
-.seg-pending {{ background:#3a4257; }}
-.seg-failed {{ background:var(--bad); }}
-.legend {{ display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin:8px 0 20px; }}
-.legend span {{ display:inline-flex; align-items:center; gap:5px; }}
-.legend i {{ width:10px; height:10px; border-radius:3px; display:inline-block; }}
-table {{ width:100%; border-collapse:collapse; font-size:14px; }}
-th {{ text-align:left; color:var(--muted); font-weight:normal; padding:6px 8px 6px 0; }}
-td {{ padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Consolas, monospace; }}
-.compact th {{ width:55%; }}
-footer {{ margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }}
-p {{ line-height:1.6; }}
-code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:13px; }}
-.quality-cuts {{ margin:10px 0 0; padding-left:20px; line-height:1.7; color:var(--muted); font-size:14px; }}
-@media (max-width:900px) {{ .dash-grid {{ grid-template-columns:1fr; }} }}
-</style>
+<title>GSS — About</title>
+<style>{THEME_CSS}</style>
 </head>
 <body>
 
 <div class="hero">
     <h1>GSS — Generalised Sky Survey</h1>
-    <p><a href="review_pack/review.html">Candidate review pack →</a></p>
+    <div class="links">
+        <a href="index.html">← Overview</a>
+        <a href="review_pack/review.html">Candidate review pack →</a>
+    </div>
 </div>
 
 <h2>Introduction</h2>
@@ -374,6 +329,91 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
 </ul>
 </section>
 
+<footer>
+    GSS — Generalised Sky Survey. See <code>README.md</code> for the full command reference and <code>quickstart.md</code> to run the pipeline yourself.
+</footer>
+
+</body>
+</html>"""
+
+
+def make_html(db_path: str, out_path: Path) -> str:
+    con = connect(db_path)
+    try:
+        sources = source_summary(con)
+        tiles = tile_progress(con)
+        tiles_by_source = {t["source"]: t for t in tiles}
+        triage_dist = triage_class_distribution(con)
+        triage_stats = triage_overview(con)
+        cross_stats = crossmatch_overview(con)
+        review_stats = review_status_summary(con)
+        runs = recent_runs(con)
+        db_stats = db_file_stats(db_path)
+
+        total_objects = sum(s["objects"] for s in sources)
+        total_candidates = sum(s["candidates"] for s in sources)
+        total_triaged = sum(s["triaged"] for s in sources)
+        total_tile_slots = sum(t["total"] for t in tiles) or 1
+        total_resolved = sum(t["complete"] + t["no_coverage"] for t in tiles)
+        overall_pct = 100 * total_resolved / total_tile_slots
+    finally:
+        con.close()
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    source_cards_html = "\n".join(source_card(s, tiles_by_source) for s in sources) or "<p class='subtle'>No sources scanned yet.</p>"
+
+    triage_dist_html = ""
+    triage_total = sum(r["n"] for r in triage_dist) or 1
+    for r in triage_dist:
+        triage_dist_html += count_bar_row(r["triage_class"], r["n"], triage_total)
+
+    review_html = ""
+    review_total = sum(r["n"] for r in review_stats) or 1
+    for r in review_stats:
+        review_html += count_bar_row(r["status"], r["n"], review_total)
+
+    cross_n = int(cross_stats.get("n") or 0)
+    cross_simbad = int(cross_stats.get("simbad") or 0)
+    cross_ned = int(cross_stats.get("ned") or 0)
+    cross_gaia = int(cross_stats.get("gaia") or 0)
+    cross_wise = int(cross_stats.get("wise") or 0)
+
+    runs_rows = "\n".join(
+        f"<tr><td>{esc(r['run_id'])}</td><td>{esc(r['run_type'])}</td><td>{esc(r['status'])}</td>"
+        f"<td>{esc(r['started_at'])}</td><td>{esc(r['finished_at'] or '—')}</td></tr>"
+        for r in runs
+    ) or "<tr><td colspan='5' class='subtle'>No runs yet.</td></tr>"
+
+    avg_review = triage_stats.get("avg_review")
+    avg_risk = triage_stats.get("avg_risk")
+
+    skymap_items = []
+    for s in sources:
+        img_path = Path("figures") / f"skymap_{s['source']}.png"
+        if img_path.exists():
+            skymap_items.append(
+                f'<div class="skymap-item"><img src="{esc(img_path.as_posix())}" alt="{esc(s["source"])} tile coverage"></div>'
+            )
+    skymap_html = "\n".join(skymap_items) or "<p class='subtle'>No skymaps generated yet -- run build_skymap.py.</p>"
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GSS — Generalised Sky Survey</title>
+<style>{THEME_CSS}</style>
+</head>
+<body>
+
+<div class="hero">
+    <h1>GSS — Generalised Sky Survey</h1>
+    <div class="links">
+        <a href="about.html">About →</a>
+        <a href="review_pack/review.html">Candidate review pack →</a>
+    </div>
+</div>
+
 <h2>Summary</h2>
 <p class="subtle">Figures below are generated from the pipeline database ({db_stats['size_mb']:.1f} MB, last modified {esc(db_stats['mtime'])}) at {esc(timestamp)}.</p>
 
@@ -439,15 +479,21 @@ code {{ background:var(--panel3); padding:1px 5px; border-radius:4px; font-size:
 
 
 def build_landing(db_path: str, out_path: Path) -> Path:
-    html_text = make_html(db_path, out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    html_text = make_html(db_path, out_path)
     out_path.write_text(html_text, encoding="utf-8")
+
+    about_path = out_path.parent / "about.html"
+    about_path.write_text(make_about_html(), encoding="utf-8")
+
     return out_path
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build landing.html -- a project overview + live stats dashboard, reading survey.db directly."
+        description="Build landing.html -- a live stats dashboard -- and about.html -- what GSS is and how "
+                    "the pipeline works -- reading survey.db directly."
     )
     parser.add_argument("--db", default=DEFAULT_DB)
     parser.add_argument("--output", "-o", type=Path, default=DEFAULT_OUTPUT)
@@ -455,6 +501,7 @@ def main():
 
     out_path = build_landing(args.db, args.output)
     print(f"Landing page built: {out_path}")
+    print(f"About page built: {out_path.parent / 'about.html'}")
 
 
 if __name__ == "__main__":
