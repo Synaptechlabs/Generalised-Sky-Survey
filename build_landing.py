@@ -257,7 +257,7 @@ def make_about_html() -> str:
     <h1>GSS — Generalised Sky Survey</h1>
     <div class="links">
         <a href="index.html">← Overview</a>
-        <a href="review_pack/review.html">Candidate review pack →</a>
+        <a href="review_pack/review.html">Object Catalogue →</a>
     </div>
 </div>
 
@@ -395,6 +395,11 @@ def make_html(db_path: str, out_path: Path) -> str:
             skymap_items.append(
                 f'<div class="skymap-item"><img src="{esc(img_path.as_posix())}" alt="{esc(s["source"])} tile coverage"></div>'
             )
+    composite_path = Path("figures") / "skymap_composite.png"
+    if composite_path.exists():
+        skymap_items.append(
+            f'<div class="skymap-item"><img src="{esc(composite_path.as_posix())}" alt="composite tile coverage"></div>'
+        )
     skymap_html = "\n".join(skymap_items) or "<p class='subtle'>No skymaps generated yet -- run build_skymap.py.</p>"
 
     return f"""<!doctype html>
@@ -410,7 +415,7 @@ def make_html(db_path: str, out_path: Path) -> str:
     <h1>GSS — Generalised Sky Survey</h1>
     <div class="links">
         <a href="about.html">About →</a>
-        <a href="review_pack/review.html">Candidate review pack →</a>
+        <a href="review_pack/review.html">Object Catalogue →</a>
     </div>
 </div>
 

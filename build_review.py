@@ -464,7 +464,7 @@ def make_html(df: pd.DataFrame, db_path: str, thumb_dir: Path, review_dir: Path,
 <html>
 <head>
 <meta charset="utf-8">
-<title>Candidate Review Pack</title>
+<title>Object Catalogue</title>
 <style>
 :root {{
     --bg:#0f1117; --panel:#171a22; --panel2:#202532; --panel3:#11141c;
@@ -547,7 +547,7 @@ td {{ padding:6px 14px 6px 0; border-bottom:1px solid #2d3445; font-family:Conso
 </style>
 </head>
 <body>
-<h1>Candidate Review Pack</h1>
+<h1>Object Catalogue</h1>
 <p class="subtle">Generated {esc(timestamp)} from the pipeline database — {len(df)} candidates sorted by review_score.</p>
 {make_dashboard(df)}
 
