@@ -23,6 +23,7 @@
 #              Every other object_cols field keeps the write-once rule.
 # ---------------------------------------------------------------------------
 import argparse
+import threading
 
 from astroquery.ipac.irsa import Irsa
 
@@ -31,6 +32,43 @@ from features_wise import clean_and_engineer
 from scan_tile import ensure_tile_scans, next_pending_tile, get_tile
 
 SOURCE = "wise"
+
+# Irsa.query_tap() delegates to pyvo's TAPService.run_sync(), which has no
+# HTTP timeout of its own -- astroquery's conf.timeout is dead config for
+# this code path. Without a hard wall-clock bound here, a server that
+# accepts the connection but never responds hangs this call (and the whole
+# pipeline behind it) indefinitely instead of raising something the
+# existing except/failed-tile handling below can catch. Confirmed cause of
+# a 34-hour pipeline stall on 2026-07-28/29.
+#
+# Uses a daemon thread rather than ThreadPoolExecutor: the stdlib registers
+# an atexit hook that joins every ThreadPoolExecutor worker thread before
+# the interpreter can exit, so a still-hung query would keep this script's
+# process alive (and run_pipeline.py's subprocess.run() waiting on it)
+# regardless of the timeout firing here. A daemon thread can't block
+# process exit -- confirmed the ThreadPoolExecutor version doesn't actually
+# fix the hang before switching to this.
+TAP_QUERY_TIMEOUT_SECONDS = 120
+
+
+def query_tap_with_timeout(query, timeout=TAP_QUERY_TIMEOUT_SECONDS):
+    outcome = {}
+
+    def target():
+        try:
+            outcome["value"] = Irsa.query_tap(query)
+        except Exception as e:
+            outcome["error"] = e
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        raise TimeoutError(f"IRSA TAP query did not respond within {timeout}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def wise_query_for_tile(ra_min, ra_max, dec_min, dec_max, limit):
@@ -65,7 +103,7 @@ def backfill_coadd_id(con, wise_objid):
     or the object has no coadd_id recorded (persists nothing in that case).
     """
     try:
-        table = Irsa.query_tap(
+        table = query_tap_with_timeout(
             f"SELECT TOP 1 coadd_id FROM allwise_p3as_psd WHERE cntr = {int(wise_objid)}"
         ).to_table()
     except Exception as e:
@@ -125,7 +163,7 @@ def main():
 
         table = None
         try:
-            table = Irsa.query_tap(query).to_table()
+            table = query_tap_with_timeout(query).to_table()
         except Exception as query_err:
             error_str = str(query_err)
             print(f"WISE query failed for {tile_id}: {error_str[:250]}")
