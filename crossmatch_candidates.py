@@ -8,6 +8,7 @@
 # ---------------------------------------------------------------------------
 import argparse
 import math
+import threading
 import time
 
 import numpy as np
@@ -24,6 +25,35 @@ Ned.TIMEOUT = 30
 Gaia.TIMEOUT = 30
 
 WISE_MATCH_RADIUS_ARCSEC = 6.0  # AllWISE's own W1/W2 angular resolution
+
+# .TIMEOUT above is not a reliable guarantee -- scan_tile_wise.py hit the
+# same "TIMEOUT config exists but isn't actually plumbed into this call
+# path" issue with Irsa.query_tap() (a 34h pipeline stall, 2026-07-28/29).
+# Gaia.cone_search_async() in particular polls an async TAP job and can
+# hang in that poll loop regardless of .TIMEOUT. Wrap every external
+# SIMBAD/NED/Gaia call in a hard wall-clock bound via a daemon thread (not
+# ThreadPoolExecutor -- its worker threads get joined at interpreter exit,
+# which would keep this script's process, and run_pipeline.py's
+# subprocess.run() waiting on it, alive regardless of the timeout firing).
+# Confirmed cause of a 3-day stall in this exact function, 2026-08-08.
+def run_with_timeout(fn, *args, timeout=60, **kwargs):
+    outcome = {}
+
+    def target():
+        try:
+            outcome["value"] = fn(*args, **kwargs)
+        except Exception as e:
+            outcome["error"] = e
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        raise TimeoutError(f"{getattr(fn, '__qualname__', fn)} did not respond within {timeout}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def wise_match_for_coord(con, ra, dec, radius_arcsec=WISE_MATCH_RADIUS_ARCSEC):
@@ -106,7 +136,7 @@ def main():
             # SIMBAD
             simbad_match = simbad_id = simbad_otype = ""
             try:
-                s = Simbad.query_region(coord, radius=30*u.arcsec)
+                s = run_with_timeout(Simbad.query_region, coord, radius=30*u.arcsec)
                 if s is not None and len(s) > 0:
                     simbad_match = 1
                     simbad_id = str(s[0].get("main_id", s[0][0]))
@@ -117,7 +147,7 @@ def main():
             # NED
             ned_match = ned_name = ned_type = ""
             try:
-                n = Ned.query_region(coord, radius=30*u.arcsec)
+                n = run_with_timeout(Ned.query_region, coord, radius=30*u.arcsec)
                 if n is not None and len(n) > 0:
                     ned_match = 1
                     ned_name = str(n[0].get("Object Name", ""))
@@ -128,8 +158,9 @@ def main():
             # Gaia
             gaia_match = gaia_source_id = gaia_dist = ""
             try:
-                j = Gaia.cone_search_async(coord, radius=radius)
-                g = j.get_results()
+                def gaia_lookup():
+                    return Gaia.cone_search_async(coord, radius=radius).get_results()
+                g = run_with_timeout(gaia_lookup)
                 if len(g) > 0:
                     gaia_match = 1
                     gaia_source_id = str(g[0]["source_id"])
