@@ -11,6 +11,7 @@
 #              duplicated.
 # ---------------------------------------------------------------------------
 import argparse
+import threading
 
 from astroquery.gaia import Gaia
 
@@ -22,6 +23,35 @@ from scan_tile import ensure_tile_scans, next_pending_tile, get_tile, score_tile
 SOURCE = "gaia"
 
 Gaia.TIMEOUT = 60
+
+# Gaia.TIMEOUT above is not a reliable guarantee -- same "TIMEOUT config
+# exists but isn't actually plumbed into this call path" issue already hit
+# with Irsa.query_tap() (scan_tile_wise.py) and Gaia.cone_search_async()
+# (crossmatch_candidates.py). launch_job()/get_results() submits and polls
+# an async TAP job, which can hang in that poll loop regardless of
+# .TIMEOUT. Confirmed cause of a 6-day pipeline stall in this exact
+# function, 2026-08-12/18. Daemon thread, not ThreadPoolExecutor -- its
+# worker threads get joined at interpreter exit, which would keep this
+# script's process (and run_pipeline.py's subprocess.run() waiting on it)
+# alive regardless of the timeout firing.
+def run_with_timeout(fn, *args, timeout=120, **kwargs):
+    outcome = {}
+
+    def target():
+        try:
+            outcome["value"] = fn(*args, **kwargs)
+        except Exception as e:
+            outcome["error"] = e
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        raise TimeoutError(f"{getattr(fn, '__qualname__', fn)} did not respond within {timeout}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def gaia_query_for_tile(ra_min, ra_max, dec_min, dec_max, limit):
@@ -85,8 +115,9 @@ def main():
 
         table = None
         try:
-            job = Gaia.launch_job(query)
-            table = job.get_results()
+            def gaia_lookup():
+                return Gaia.launch_job(query).get_results()
+            table = run_with_timeout(gaia_lookup)
         except Exception as query_err:
             error_str = str(query_err)
             print(f"Gaia query failed for {tile_id}: {error_str[:250]}")
